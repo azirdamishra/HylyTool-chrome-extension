@@ -1,23 +1,33 @@
-// Initialize button with user's preferred color
-let changeColor = document.getElementById("changeColor");
+"use strict";
 
-chrome.storage.sync.get("color", ({ color }) => {
-  changeColor.style.backgroundColor = color;
-});
+console.log("Hello world from Hylytool!")
 
-//when the button is clicked, inject setPageBackgroundColor into current page
-changeColor.addEventListener("click", async () => {
-    let [tab] = await chrome.tabs.query({active:true, currentWindow: true});
-
-    chrome.scripting.executeScript({
-        target: {tabId: tab.id}, 
-        function: setPageBackgroundColor,
-    });
-});
-
-//the function's body will be executed as a content script inside the current page
-function setPageBackgroundColor(){
-    chrome.storage.sync.get("color", ({color}) => {
-        document.body.style.backgroundColor = color;
-    });
+function setBadgeText(enabled){
+    const text = enabled? "ON" : "OFF"
+    void chrome.action.setBadgeText({text: text})
 }
+
+//Handle ON/OFF switch
+const checkBox = document.getElementById("enabled")
+chrome.storage.sync.get("enabled", (data) => {
+    checkBox.checked = !!data.enabled
+    void setBadgeText(data.enabled)
+})
+checkBox.addEventListener("change", (event) => {
+    if(event.target instanceof HTMLInputElement){
+        void chrome.storage.sync.set({"enabled": event.target.checked})
+        void setBadgeText(event.target.checked)
+    }
+})
+
+//Handle the input field
+const input = document.getElementById("item")
+
+chrome.storage.sync.get("item", (data) => {
+    input.value = data.item || ""
+});
+input.addEventListener("change", (event) => {
+    if(event.target instanceof HTMLInputElement){
+        void chrome.storage.sync.set({"item": event.target.value})
+    }
+})

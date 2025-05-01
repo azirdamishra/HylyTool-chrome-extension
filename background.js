@@ -1,7 +1,16 @@
+"use strict"
 
-let color = '#3aa757';
+function setBadgeText(enabled){
+    const text = enabled? "ON" : "OFF"
+    void chrome.action.setBadgeText({text: text})
+}
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.set({ color });
-  console.log('Default background color set to %cgreen', `color: ${color}`);
-});
+function startUp() {
+    chrome.storage.sync.get("enabled", (data) => {
+        setBadgeText(!!data.enabled)
+    })
+}
+
+//Ensure the backgrond script always runs 
+chrome.runtime.onStartup.addListener(startUp)
+chrome.runtime.onInstalled.addListener(startUp)
