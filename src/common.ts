@@ -23,164 +23,323 @@ export function reapplyHighlightsFromStorage(
     container: HTMLElement = document.body
 ): void {
     console.log("Reapplying highlights:", highlights);
-    container.normalize(); //merge adjacent text nodes
-
+    
     // First, clear any existing highlights
-    const existingHighlights = container.querySelectorAll('.custom-highlight');
-    existingHighlights.forEach(el => {
+    removeAllHighlights(container);
+    
+    // Create a single DOM walker to improve performance
+    const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        null
+    );
+    
+    // Collect all text nodes once (performance optimization)
+    const textNodes: Text[] = [];
+    while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        if (node.nodeValue && node.nodeValue.trim() !== '') {
+            textNodes.push(node);
+        }
+    }
+    
+    console.log(`Found ${textNodes.length} text nodes in document`);
+    
+    // Process highlights in order
+    for (const item of highlights) {
+        try {
+            const normalizedText = item.text.trim().replace(/\s+/g, ' ');
+            console.log(`Processing highlight: "${normalizedText}" (ID: ${item.id})`);
+            
+            // Track if we successfully applied this highlight
+            let applied = false;
+            
+            // 1. Try exact match with position information
+            if (item.position !== undefined) {
+                console.log(`Trying exact match with position ${item.position}`);
+                const matches = findTextMatches(textNodes, normalizedText, false);
+                
+                if (matches.length > item.position) {
+                    const match = matches[item.position];
+                    applied = highlightTextNode(match.node, match.index, normalizedText.length, item.color, item.id);
+                    
+                    if (applied) {
+                        console.log(`Successfully applied highlight at position ${item.position}`);
+                        continue; // Move to next highlight
+                    }
+                }
+            }
+            
+            // 2. Try context-based matching
+            if (!applied && (item.contextBefore || item.contextAfter)) {
+                console.log('Trying context-based matching');
+                const matches = findTextMatches(textNodes, normalizedText, false);
+                
+                // Find best context match
+                let bestMatchIndex = -1;
+                let bestScore = -1;
+                
+                for (let i = 0; i < matches.length; i++) {
+                    const match = matches[i];
+                    const nodeText = match.node.nodeValue || '';
+                    let score = 0;
+                    
+                    // Check context before
+                    if (item.contextBefore) {
+                        const before = match.index >= item.contextBefore.length ? 
+                            nodeText.substring(match.index - item.contextBefore.length, match.index) : 
+                            nodeText.substring(0, match.index);
+                            
+                        if (before.endsWith(item.contextBefore)) {
+                            score += 2;
+                        } else if (before.includes(item.contextBefore)) {
+                            score += 1;
+                        }
+                    }
+                    
+                    // Check context after
+                    if (item.contextAfter) {
+                        const after = match.index + normalizedText.length + item.contextAfter.length <= nodeText.length ?
+                            nodeText.substring(match.index + normalizedText.length, match.index + normalizedText.length + item.contextAfter.length) :
+                            nodeText.substring(match.index + normalizedText.length);
+                            
+                        if (after.startsWith(item.contextAfter)) {
+                            score += 2;
+                        } else if (after.includes(item.contextAfter)) {
+                            score += 1;
+                        }
+                    }
+                    
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMatchIndex = i;
+                    }
+                }
+                
+                if (bestMatchIndex !== -1) {
+                    const match = matches[bestMatchIndex];
+                    applied = highlightTextNode(match.node, match.index, normalizedText.length, item.color, item.id);
+                    
+                    if (applied) {
+                        console.log(`Successfully applied highlight with context match (score: ${bestScore})`);
+                        continue; // Move to next highlight
+                    }
+                }
+            }
+            
+            // 3. Try case-insensitive match for single words
+            if (!applied && !normalizedText.includes(' ')) {
+                console.log('Trying case-insensitive match for single word');
+                const matches = findTextMatches(textNodes, normalizedText, true);
+                
+                if (matches.length > 0) {
+                    const match = matches[0]; // Use the first match
+                    applied = highlightTextNode(match.node, match.index, match.length, item.color, item.id);
+                    
+                    if (applied) {
+                        console.log('Successfully applied highlight with case-insensitive match');
+                        continue; // Move to next highlight
+                    }
+                }
+            }
+            
+            // 4. For phrases, try partial matching
+            if (!applied && normalizedText.includes(' ')) {
+                console.log('Trying partial match for phrase');
+                const words = normalizedText.split(' ');
+                
+                // Try with decreasing number of words
+                for (let wordCount = words.length - 1; wordCount >= 1; wordCount--) {
+                    const partialText = words.slice(0, wordCount).join(' ');
+                    console.log(`Trying with partial text: "${partialText}"`);
+                    
+                    const matches = findTextMatches(textNodes, partialText, false);
+                    
+                    if (matches.length > 0) {
+                        const match = matches[0]; // Use the first match
+                        applied = highlightTextNode(match.node, match.index, partialText.length, item.color, item.id);
+                        
+                        if (applied) {
+                            console.log(`Successfully applied highlight with partial text "${partialText}"`);
+                            break; // Exit the for loop
+                        }
+                    }
+                }
+                
+                if (applied) continue; // Move to next highlight
+            }
+            
+            // 5. Last resort: try with first word only for phrases
+            if (!applied && normalizedText.includes(' ')) {
+                console.log('Trying with first word only');
+                const firstWord = normalizedText.split(' ')[0];
+                const matches = findTextMatches(textNodes, firstWord, true);
+                
+                if (matches.length > 0) {
+                    const match = matches[0]; // Use the first match
+                    applied = highlightTextNode(match.node, match.index, match.length, item.color, item.id);
+                    
+                    if (applied) {
+                        console.log(`Successfully applied highlight with first word "${firstWord}"`);
+                        continue; // Move to next highlight
+                    }
+                }
+            }
+            
+            if (!applied) {
+                console.warn(`Failed to reapply highlight: "${normalizedText}"`);
+            }
+        } 
+        catch (err) {
+            console.error(`Error reapplying highlight:`, err);
+        }
+    }
+    
+    // Final cleanup - remove any nested highlights and normalize DOM
+    cleanupHighlights(container);
+}
+
+/**
+ * Find all occurrences of text in text nodes.
+ * @param textNodes Array of text nodes to search
+ * @param searchText Text to search for
+ * @param caseInsensitive Whether to do case-insensitive matching
+ * @returns Array of matches with node, index and length
+ */
+function findTextMatches(
+    textNodes: Text[], 
+    searchText: string,
+    caseInsensitive: boolean
+): Array<{ node: Text; index: number; length: number }> {
+    const matches: Array<{ node: Text; index: number; length: number }> = [];
+    
+    for (const node of textNodes) {
+        const nodeText = node.nodeValue || '';
+        
+        if (caseInsensitive) {
+            // Case-insensitive search
+            const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+            let match;
+            
+            while ((match = regex.exec(nodeText)) !== null) {
+                matches.push({ 
+                    node, 
+                    index: match.index, 
+                    length: match[0].length 
+                });
+            }
+        } else {
+            // Case-sensitive exact search
+            let position = 0;
+            let index = nodeText.indexOf(searchText, position);
+            
+            while (index !== -1) {
+                matches.push({ 
+                    node, 
+                    index, 
+                    length: searchText.length 
+                });
+                position = index + searchText.length;
+                index = nodeText.indexOf(searchText, position);
+            }
+        }
+    }
+    
+    return matches;
+}
+
+/**
+ * Remove all highlights from the container
+ */
+function removeAllHighlights(container: HTMLElement): void {
+    const highlights = container.querySelectorAll('.custom-highlight');
+    console.log(`Removing ${highlights.length} existing highlights`);
+    
+    highlights.forEach(el => {
         const parent = el.parentNode;
-        if(parent){
+        if (parent) {
             parent.replaceChild(document.createTextNode(el.textContent || ''), el);
         }
     });
     
-    // Normalize again after clearing
+    // Normalize DOM to merge adjacent text nodes
     container.normalize();
-    
-    for(const item of highlights){
-        try{
-            // First, try with the exact text
-            let normalizedTarget = item.text.trim().replace(/\s+/g, ' ');
-            const walker = document.createTreeWalker(
-                container,
-                NodeFilter.SHOW_TEXT,
-                null
-            );
-
-            // Find all matching text nodes and their positions
-            let matchingNodes: { node: Text; index: number }[] = [];
-            
-            // First pass: try to find exact matches
-            while(walker.nextNode()){
-                const node = walker.currentNode as Text;
-                // Skip nodes that are empty or only whitespace
-                if(!node.nodeValue || node.nodeValue.trim() === '') continue;
-                // Skip nodes that are too small to contain our target
-                if(node.nodeValue.length < normalizedTarget.length) continue;
-                
-                const nodeText = node.nodeValue;
-                const idx = nodeText.indexOf(normalizedTarget);
-                
-                if(idx !== -1){
-                    // Check context if available
-                    if (item.contextBefore || item.contextAfter) {
-                        const beforeContext = idx >= 50 ? nodeText.substring(idx - 50, idx) : nodeText.substring(0, idx);
-                        const afterContext = nodeText.substring(idx + normalizedTarget.length, idx + normalizedTarget.length + 50);
-                        
-                        // If context is specified, make sure it matches
-                        if (item.contextBefore && !beforeContext.endsWith(item.contextBefore)) {
-                            continue;
-                        }
-                        if (item.contextAfter && !afterContext.startsWith(item.contextAfter)) {
-                            continue;
-                        }
-                    }
-                    
-                    matchingNodes.push({ node, index: idx });
-                }
-            }
-            
-            // No exact matches found, try with relaxed matching
-            if (matchingNodes.length === 0) {
-                console.log("No exact matches found for: " + normalizedTarget + ", trying with relaxed matching");
-                
-                // Try with a more relaxed approach using regex with word boundaries
-                const escapedText = normalizedTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp('\\b' + escapedText + '\\b', 'i'); // case-insensitive, word boundaries
-                
-                const walker = document.createTreeWalker(
-                    container,
-                    NodeFilter.SHOW_TEXT,
-                    null
-                );
-                
-                while(walker.nextNode()){
-                    const node = walker.currentNode as Text;
-                    if(!node.nodeValue || node.nodeValue.trim() === '') continue;
-                    
-                    const nodeText = node.nodeValue;
-                    const match = nodeText.match(regex);
-                    
-                    if(match && match.index !== undefined){
-                        matchingNodes.push({ node, index: match.index });
-                    }
-                }
-                
-                // If still no matches, split the text and try to find partial matches
-                if (matchingNodes.length === 0 && normalizedTarget.includes(' ')) {
-                    console.log("Still no matches, trying with partial text");
-                    // For phrases, try with just the first few words
-                    const words = normalizedTarget.split(' ');
-                    if (words.length > 1) {
-                        // Try with just the first 2-3 words if it's a long phrase
-                        const partialTarget = words.slice(0, Math.min(3, words.length)).join(' ');
-                        
-                        const walker = document.createTreeWalker(
-                            container,
-                            NodeFilter.SHOW_TEXT,
-                            null
-                        );
-                        
-                        while(walker.nextNode()){
-                            const node = walker.currentNode as Text;
-                            if(!node.nodeValue || node.nodeValue.trim() === '') continue;
-                            
-                            const nodeText = node.nodeValue;
-                            const idx = nodeText.indexOf(partialTarget);
-                            
-                            if(idx !== -1){
-                                matchingNodes.push({ node, index: idx });
-                                // Adjust highlight length to only cover what was found
-                                normalizedTarget = partialTarget;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // No matches found after all attempts
-            if (matchingNodes.length === 0) {
-                console.warn("Failed to reapply highlight: ", item.text);
-                continue;
-            }
-            
-            // If position is specified, use that occurrence
-            let targetNode, targetIndex;
-            if (item.position !== undefined && item.position < matchingNodes.length) {
-                const match = matchingNodes[item.position];
-                targetNode = match.node;
-                targetIndex = match.index;
-            } else {
-                // Default to the first occurrence if no position or position is out of range
-                const match = matchingNodes[0];
-                targetNode = match.node;
-                targetIndex = match.index;
-            }
-            
-            const success = applyHighlightToTextNode(targetNode, targetIndex, normalizedTarget.length, item.color, item.id);
-            if(success){
-                console.log("Reapplied highlight: ", item.id, " with color ", item.color);
-            } else {
-                console.warn("Failed to apply highlight: ", item.text);
-            }
-        }
-        catch(err){
-            console.error("Error reapplying highlight: ", err);
-        }
-    }
 }
 
+/**
+ * Clean up any nested highlights or invalid DOM structures
+ */
+function cleanupHighlights(container: HTMLElement): void {
+    // Normalize DOM to merge adjacent text nodes
+    container.normalize();
+    
+    // Find and fix any nested highlights
+    const highlights = container.querySelectorAll('.custom-highlight');
+    highlights.forEach(highlight => {
+        const nestedHighlights = highlight.querySelectorAll('.custom-highlight');
+        if (nestedHighlights.length > 0) {
+            console.warn('Found nested highlights - fixing');
+            nestedHighlights.forEach(nested => {
+                const text = nested.textContent || '';
+                nested.parentNode?.replaceChild(document.createTextNode(text), nested);
+            });
+        }
+    });
+}
 
 /**
- * Highlights a given substring within a text node using DOM node splitting 
+ * Highlights a given substring within a text node
  * @returns true if highlight applied, false if not applied
- * 
- * @param node - The Text node containing the match
- * @param startIndex - The start index of the text to highlight
- * @param length - The length of the text to highlight
- * @param color - Highlight background color (eg: '#ffff00)
- * @param id - A unique ID to assign to the span (eg. 'highlight-xyz')
  */
+function highlightTextNode(
+    node: Text,
+    startIndex: number,
+    length: number,
+    color: string,
+    id: string
+): boolean {
+    try {
+        // Validate parameters
+        if (!node || !node.nodeValue) return false;
+        if (startIndex < 0 || startIndex + length > node.length) {
+            console.error('Invalid range:', {startIndex, length, nodeLength: node.length});
+            return false;
+        }
+        
+        // Create range
+        const range = document.createRange();
+        range.setStart(node, startIndex);
+        range.setEnd(node, startIndex + length);
+        
+        // Create span
+        const span = document.createElement('span');
+        span.className = 'custom-highlight';
+        span.id = id;
+        span.style.backgroundColor = color;
+        
+        try {
+            // Main approach: surroundContents
+            range.surroundContents(span);
+            return true;
+        } catch (e) {
+            console.warn('Range.surroundContents failed, trying alternative approach');
+            
+            try {
+                // Alternative 1: extract and insert
+                const fragment = range.extractContents();
+                span.appendChild(fragment);
+                range.insertNode(span);
+                return true;
+            } catch (e2) {
+                console.error('Alternative approach also failed:', e2);
+                return false;
+            }
+        }
+    } catch (error) {
+        console.error('Error in highlightTextNode:', error);
+        return false;
+    }
+}
 
 export function applyHighlightToTextNode(
     node: Text,
@@ -189,44 +348,5 @@ export function applyHighlightToTextNode(
     color: string,
     id: string
 ): boolean {
-    try {
-        // Ensure the indices are valid
-        if (startIndex < 0 || startIndex + length > node.length) {
-            console.error("Invalid range:", {startIndex, length, nodeLength: node.length});
-            return false;
-        }
-        
-        // Create a range for the matching text
-        const range = document.createRange();
-        range.setStart(node, startIndex);
-        range.setEnd(node, startIndex + length);
-        
-        // Create the highlight span
-        const span = document.createElement('span');
-        span.className = 'custom-highlight';
-        span.id = id;
-        span.style.backgroundColor = color;
-        
-        try {
-            // Wrap the matching text in the span
-            range.surroundContents(span);
-            return true;
-        } catch (e) {
-            console.error("Failed to surround contents:", e);
-            
-            // Try an alternative approach
-            try {
-                const fragment = range.extractContents();
-                span.appendChild(fragment);
-                range.insertNode(span);
-                return true;
-            } catch (e2) {
-                console.error("Failed alternative approach:", e2);
-                return false;
-            }
-        }
-    } catch (error) {
-        console.error("Error applying highlight:", error);
-        return false;
-    }
+    return highlightTextNode(node, startIndex, length, color, id);
 }
