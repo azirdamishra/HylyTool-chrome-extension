@@ -1,9 +1,4 @@
-"use strict"
-
-function setBadgeText(enabled){
-    const text = enabled? "ON" : "OFF"
-    void chrome.action.setBadgeText({text: text})
-}
+import { setBadgeText } from './common'
 
 function startUp() {
     chrome.storage.sync.get("enabled", (data) => {

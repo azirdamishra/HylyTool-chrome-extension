@@ -4,7 +4,7 @@ const blurFilter = "blur(6px)"
 let textToBlur = ""
 
 //Search the DOM node for text to blur and blur only the specific text
-function processNode(node){
+function processNode(node: Node){
     if(node.childNodes.length > 0){
         Array.from(node.childNodes).forEach(processNode)
     }
@@ -12,6 +12,7 @@ function processNode(node){
         node.textContent !== null &&
         node.textContent.trim().length > 0){
             const parent = node.parentElement
+            if(parent == null) return
             if(parent != null &&
                 (parent.tagName === 'SCRIPT' || parent.style.filter === blurFilter)
             ){
@@ -19,35 +20,31 @@ function processNode(node){
                 return
             }
             if (node.textContent.includes(textToBlur)){
-                //To blur specific text
-                // // Create a span to wrap just the matching text
-                // const span = document.createElement('span');
-                // span.style.filter = blurFilter;
-                // span.style.display = 'inline';
+                // Create a span to wrap just the matching text
+                const span = document.createElement('span');
+                span.style.filter = blurFilter;
+                span.style.display = 'inline';
                 
-                // // Split the text and wrap the matching part
-                // const parts = node.textContent.split(textToBlur);
-                // const textNode = document.createTextNode(parts.join(''));
+                // Split the text and wrap the matching part
+                const parts = node.textContent.split(textToBlur);
+                const textNode = document.createTextNode(parts.join(''));
                 
-                // // Replace the original text node with our new structure
-                // parent.replaceChild(textNode, node);
+                // Replace the original text node with our new structure
+                parent.replaceChild(textNode, node);
                 
-                // // Insert the blurred spans between the parts
-                // for (let i = 0; i < parts.length - 1; i++) {
-                //     const blurSpan = span.cloneNode(true);
-                //     blurSpan.textContent = textToBlur;
-                //     parent.insertBefore(blurSpan, textNode);
-                // }
+                // Insert the blurred spans between the parts
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const blurSpan = span.cloneNode(true);
+                    blurSpan.textContent = textToBlur;
+                    parent.insertBefore(blurSpan, textNode);
+                }
                 
-                // console.log("Blurred specific text:", textToBlur);
-
-                //To blur the parent content itself no hassles
-                blurElement(parent)
+                console.log("Blurred specific text:", textToBlur);
             }
     }
 }
 
-function blurElement(elem) {
+function blurElement(elem: HTMLElement) {
     elem.style.filter = blurFilter
     console.debug("blurred id:" + elem.id + " class:" + elem.className +
         " tag:" + elem.tagName + " text:" + elem.textContent)
@@ -91,7 +88,7 @@ chrome.storage.sync.get(keys, (data) => {
             childList: true,
             subtree: true
         })
-        //Loop through all elements on the page for initial processing 
+        //Process the initial page content
         processNode(document)
     } else {
         console.log("Not starting observation because:", {
@@ -99,5 +96,4 @@ chrome.storage.sync.get(keys, (data) => {
             hasText: textToBlur.trim().length > 0
         });
     }
-    processNode(document)
 })
