@@ -1,5 +1,5 @@
 "use strict";
-import { applyHighlightToTextNode } from "./common";
+import { applyHighlightToTextNode, reapplyHighlightsFromStorage } from "./common";
 
 const blurFilter = "blur(6px)"
 let textToBlur = ""
@@ -114,29 +114,40 @@ chrome.storage.local.get(['highlightMode', 'highlightColor'], (data) => {
             if(selection && selection.toString()){
                 console.log('Selection made:', selection.toString());
                 const range = selection.getRangeAt(0);
-                const span = document.createElement('span');
-                const highlightColor = data.highlightColor || '#ffff00';
-                span.style.backgroundColor = highlightColor;
-                span.className = 'custom-highlight';
                 
-                // Generate a unique ID for this highlight
-                const highlightId = 'highlight-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-                span.id = highlightId;
                 
                 try {
+                    const cloned = range.cloneContents();
+                    if (cloned.childNodes.length > 1) {
+                        console.warn("Highlight rejected: selection spans multiple nodes.")
+                        return;
+                    }
+                    const span = document.createElement('span');
+                    const highlightColor = data.highlightColor || '#ffff00';
+                    span.style.backgroundColor = highlightColor;
+                    span.className = 'custom-highlight';
+                    // Generate a unique ID for this highlight
+                    const highlightId = 'highlight-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                    span.id = highlightId;
+
                     range.surroundContents(span);
                     console.log('Highlight applied with ID:', highlightId, 'and color:', highlightColor);
+
+                    //Clean and limit the text length
+                    let cleanText = selection.toString().trim().replace(/\s+/g, ' ');
+                    if(cleanText.length > 100) cleanText = cleanText.slice(0, 100);
                     
                     //store the highlight
+                    const highlightData = {
+                        id: highlightId,
+                        text: cleanText,
+                        color: highlightColor,
+                        html: span.outerHTML
+                    };
+
                     const pageKey = window.location.href;
                     chrome.storage.local.get([pageKey], (data) => {
                         const existing = data[pageKey] || [];
-                        const highlightData = {
-                            id: highlightId,
-                            text: selection.toString(),
-                            color: highlightColor,
-                            html: span.outerHTML
-                        };
                         existing.push(highlightData);
                         chrome.storage.local.set({ [pageKey]: existing }, () => {
                             console.log('Highlight stored:', highlightData);
@@ -159,29 +170,7 @@ window.addEventListener('load', () => {
     chrome.storage.local.get([pageKey], (data) => {
         const highlights = data[pageKey] || [];
         console.log('Found highlights:', highlights);
-        
-        for(const item of highlights){
-            try {
-                // Get all text nodes in the document
-                const textNodes = Array.from(document.body.querySelectorAll('*'))
-                    .flatMap(n => Array.from(n.childNodes))
-                    .filter((n): n is Text => n.nodeType === Node.TEXT_NODE);
-
-                // Find the text node containing our text
-                for(const node of textNodes){
-                    const nodeText = node.textContent || '';
-                    if (nodeText.includes(item.text)) {
-                        const success = applyHighlightToTextNode(node, item.text, item.color, item.id);
-                        if (success){
-                            console.log('Reapplied highlight:', item.id, 'with color:', item.color);
-                            break; // highlight applied, stop looking
-                        } 
-                    }
-                }
-            } catch (e) {
-                console.error('Error reapplying highlight:', e);
-            }
-        }
+        reapplyHighlightsFromStorage(highlights);
     });
 });
 
@@ -189,51 +178,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if(request.action === 'extensionStateChanged'){
         console.log("Received extension state change: ", request.enabled);
         enabled = request.enabled;
-
+        const pageKey = window.location.href;
+        
         if(enabled){
             //Show all highlights when extension is enabled
-            const pageKey = window.location.href;
             chrome.storage.local.get([pageKey], (data) => {
                 const highlights = data[pageKey] || [];
                 console.log('Reapplying highlights:', highlights);
-                
-                for(const item of highlights){
-                    try {
-                        // Get all text nodes in the document
-                        const textNodes = Array.from(document.body.querySelectorAll('*'))
-                            .flatMap(n => Array.from(n.childNodes))
-                            .filter((n): n is Text => n.nodeType === Node.TEXT_NODE);
-
-                        // Find the text node containing our text
-                        for(const node of textNodes){
-                            const nodeText = node.textContent || '';
-                            if (nodeText.includes(item.text)) {
-                                const success = applyHighlightToTextNode(node, item.text, item.color, item.id);
-                                if (success){
-                                    console.log('Reapplied highlight:', item.id, 'with color:', item.color);
-                                    break; // highlight applied, stop looking
-                                } 
-                            }
-                        }
-                    } catch(e){
-                        console.error('Error reapplying highlight', e);
-                    }
-                }
-            })
+                reapplyHighlightsFromStorage(highlights);
+            });
         } else {
             //remove all highlights when extension is disabled
-            const pageKey = window.location.href;
-            chrome.storage.local.get([pageKey], (data) => {
-                const highlights = data[pageKey] || [];
-                // Only remove the visual highlights, keep the storage
-                document.querySelectorAll('.custom-highlight').forEach(el => {
-                    const parent = el.parentNode;
-                    if(parent){
-                        parent.replaceChild(document.createTextNode(el.textContent || ''), el);
-                    }
-                });
-                console.log('Removed highlights from DOM');
+            const highlights = document.querySelectorAll('.custom-highlight');
+            highlights.forEach(el => {
+                const parent = el.parentNode;
+                if(parent){
+                    parent.replaceChild(document.createTextNode(el.textContent || ''), el);
+                }
             });
+            // Normalize the document to clean up text nodes
+            document.body.normalize();
+            console.log('Removed highlights from DOM');
         }
     }
-})
+});
