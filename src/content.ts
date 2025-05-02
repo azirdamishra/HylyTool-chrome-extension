@@ -1,4 +1,5 @@
 "use strict";
+import { applyHighlightToTextNode } from "./common";
 
 const blurFilter = "blur(6px)"
 let textToBlur = ""
@@ -104,31 +105,42 @@ chrome.storage.sync.get(keys, (data) => {
 
 
 //highlighting text
-chrome.storage.local.get(['highlightMode', 'highlightColor'], ({ highlightMode, highlightColor}) => {
-    if(highlightMode){
+chrome.storage.local.get(['highlightMode', 'highlightColor'], (data) => {
+    console.log('Initial highlight mode state:', data);
+    if(data.highlightMode && enabled){
+        console.log('Setting up highlight event listener');
         document.addEventListener('mouseup', () => {
             const selection = window.getSelection();
             if(selection && selection.toString()){
+                console.log('Selection made:', selection.toString());
                 const range = selection.getRangeAt(0);
                 const span = document.createElement('span');
-                span.style.backgroundColor = highlightColor || '#ffff00';
+                const highlightColor = data.highlightColor || '#ffff00';
+                span.style.backgroundColor = highlightColor;
                 span.className = 'custom-highlight';
+                
+                // Generate a unique ID for this highlight
+                const highlightId = 'highlight-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                span.id = highlightId;
+                
                 try {
                     range.surroundContents(span);
+                    console.log('Highlight applied with ID:', highlightId, 'and color:', highlightColor);
                     
                     //store the highlight
                     const pageKey = window.location.href;
                     chrome.storage.local.get([pageKey], (data) => {
                         const existing = data[pageKey] || [];
-                        existing.push({
+                        const highlightData = {
+                            id: highlightId,
                             text: selection.toString(),
-                            color: highlightColor || '#ffff00',
-                            range: {
-                                start: range.startOffset,
-                                end: range.endOffset
-                            }
+                            color: highlightColor,
+                            html: span.outerHTML
+                        };
+                        existing.push(highlightData);
+                        chrome.storage.local.set({ [pageKey]: existing }, () => {
+                            console.log('Highlight stored:', highlightData);
                         });
-                        chrome.storage.local.set({ [pageKey]: existing });
                     });
                 } catch (e) {
                     console.error('Error applying highlight:', e);
@@ -140,58 +152,88 @@ chrome.storage.local.get(['highlightMode', 'highlightColor'], ({ highlightMode, 
 
 //on every page load, the content script checks for existing highlights in chrome storage and reapplies them
 window.addEventListener('load', () => {
-    const pageKey = window.location.href;
-    chrome.storage.local.get([pageKey, 'highlightMode'], (data) => {
-        if (!data.highlightMode) return;
-        
-        const highlights = data[pageKey] || [];
-        for(const item of highlights){
-            const textNodes = Array.from(document.body.querySelectorAll('*'))
-                                .flatMap(n => Array.from(n.childNodes))
-                                .filter(n => n.nodeType === Node.TEXT_NODE && n.textContent?.includes(item.text));
+    if(!enabled) return;//Don't show highlights if extension is disabled
 
-            for(const node of textNodes){
-                try {
-                    const span = document.createElement('span');
-                    span.style.backgroundColor = item.color || '#ffff00';
-                    span.className = 'custom-highlight';
-                    const range = document.createRange();
-                    const idx = node.textContent!.indexOf(item.text);
-                    if(idx !== -1) {
-                        range.setStart(node, idx);
-                        range.setEnd(node, idx + item.text.length);
-                        range.surroundContents(span);
+    const pageKey = window.location.href;
+    console.log('Loading highlights for page:', pageKey);
+    chrome.storage.local.get([pageKey], (data) => {
+        const highlights = data[pageKey] || [];
+        console.log('Found highlights:', highlights);
+        
+        for(const item of highlights){
+            try {
+                // Get all text nodes in the document
+                const textNodes = Array.from(document.body.querySelectorAll('*'))
+                    .flatMap(n => Array.from(n.childNodes))
+                    .filter((n): n is Text => n.nodeType === Node.TEXT_NODE);
+
+                // Find the text node containing our text
+                for(const node of textNodes){
+                    const nodeText = node.textContent || '';
+                    if (nodeText.includes(item.text)) {
+                        const success = applyHighlightToTextNode(node, item.text, item.color, item.id);
+                        if (success){
+                            console.log('Reapplied highlight:', item.id, 'with color:', item.color);
+                            break; // highlight applied, stop looking
+                        } 
                     }
-                } catch (e) {
-                    console.error('Error reapplying highlight:', e);
                 }
+            } catch (e) {
+                console.error('Error reapplying highlight:', e);
             }
         }
     });
 });
 
-//Toggle in popup to remove .custom-highlight span if extension is turned off
-chrome.runtime.onMessage.addListener((request) => {
-    if(request.action === 'clearHighlights'){
-        document.querySelectorAll('.custom-highlight').forEach(el => {
-            const parent = el.parentNode;
-            if(parent){
-                parent.replaceChild(document.createTextNode(el.textContent || ''), el);
-            }
-        });
-    }
-});
-
-//Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if(request.enabled !== undefined){
-        console.log("Received message from sender %s", sender.id, request);
-        enabled = request.enabled
+    if(request.action === 'extensionStateChanged'){
+        console.log("Received extension state change: ", request.enabled);
+        enabled = request.enabled;
+
         if(enabled){
-            observe()
+            //Show all highlights when extension is enabled
+            const pageKey = window.location.href;
+            chrome.storage.local.get([pageKey], (data) => {
+                const highlights = data[pageKey] || [];
+                console.log('Reapplying highlights:', highlights);
+                
+                for(const item of highlights){
+                    try {
+                        // Get all text nodes in the document
+                        const textNodes = Array.from(document.body.querySelectorAll('*'))
+                            .flatMap(n => Array.from(n.childNodes))
+                            .filter((n): n is Text => n.nodeType === Node.TEXT_NODE);
+
+                        // Find the text node containing our text
+                        for(const node of textNodes){
+                            const nodeText = node.textContent || '';
+                            if (nodeText.includes(item.text)) {
+                                const success = applyHighlightToTextNode(node, item.text, item.color, item.id);
+                                if (success){
+                                    console.log('Reapplied highlight:', item.id, 'with color:', item.color);
+                                    break; // highlight applied, stop looking
+                                } 
+                            }
+                        }
+                    } catch(e){
+                        console.error('Error reapplying highlight', e);
+                    }
+                }
+            })
         } else {
-            observer.disconnect()
+            //remove all highlights when extension is disabled
+            const pageKey = window.location.href;
+            chrome.storage.local.get([pageKey], (data) => {
+                const highlights = data[pageKey] || [];
+                // Only remove the visual highlights, keep the storage
+                document.querySelectorAll('.custom-highlight').forEach(el => {
+                    const parent = el.parentNode;
+                    if(parent){
+                        parent.replaceChild(document.createTextNode(el.textContent || ''), el);
+                    }
+                });
+                console.log('Removed highlights from DOM');
+            });
         }
-        sendResponse({title: document.title, url: window.location.href});
     }
 })
