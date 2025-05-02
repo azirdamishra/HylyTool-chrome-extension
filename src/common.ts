@@ -7,9 +7,9 @@ export interface HighlightData{
     id: string;
     text: string;
     color: string;
-    position?: number;
-    contextBefore?: string;
-    contextAfter?: string;
+    // Simple global page index
+    pageIndex?: number;
+    totalInstances?: number;
 }
 
 /**
@@ -22,230 +22,215 @@ export function reapplyHighlightsFromStorage(
     highlights: HighlightData[],
     container: HTMLElement = document.body
 ): void {
-    console.log("Reapplying highlights:", highlights);
+    console.log("Reapplying highlights:", highlights.length);
     
     // First, clear any existing highlights
     removeAllHighlights(container);
     
-    // Create a single DOM walker to improve performance
-    const walker = document.createTreeWalker(
-        container,
-        NodeFilter.SHOW_TEXT,
-        null
-    );
+    // Process highlights one by one with a small delay between them
+    processNextHighlight(highlights, 0, container);
     
-    // Collect all text nodes once (performance optimization)
-    const textNodes: Text[] = [];
-    while (walker.nextNode()) {
-        const node = walker.currentNode as Text;
-        if (node.nodeValue && node.nodeValue.trim() !== '') {
-            textNodes.push(node);
-        }
-    }
-    
-    console.log(`Found ${textNodes.length} text nodes in document`);
-    
-    // Process highlights in order
-    for (const item of highlights) {
-        try {
-            const normalizedText = item.text.trim().replace(/\s+/g, ' ');
-            console.log(`Processing highlight: "${normalizedText}" (ID: ${item.id})`);
-            
-            // Track if we successfully applied this highlight
-            let applied = false;
-            
-            // 1. Try exact match with position information
-            if (item.position !== undefined) {
-                console.log(`Trying exact match with position ${item.position}`);
-                const matches = findTextMatches(textNodes, normalizedText, false);
-                
-                if (matches.length > item.position) {
-                    const match = matches[item.position];
-                    applied = highlightTextNode(match.node, match.index, normalizedText.length, item.color, item.id);
-                    
-                    if (applied) {
-                        console.log(`Successfully applied highlight at position ${item.position}`);
-                        continue; // Move to next highlight
-                    }
-                }
-            }
-            
-            // 2. Try context-based matching
-            if (!applied && (item.contextBefore || item.contextAfter)) {
-                console.log('Trying context-based matching');
-                const matches = findTextMatches(textNodes, normalizedText, false);
-                
-                // Find best context match
-                let bestMatchIndex = -1;
-                let bestScore = -1;
-                
-                for (let i = 0; i < matches.length; i++) {
-                    const match = matches[i];
-                    const nodeText = match.node.nodeValue || '';
-                    let score = 0;
-                    
-                    // Check context before
-                    if (item.contextBefore) {
-                        const before = match.index >= item.contextBefore.length ? 
-                            nodeText.substring(match.index - item.contextBefore.length, match.index) : 
-                            nodeText.substring(0, match.index);
-                            
-                        if (before.endsWith(item.contextBefore)) {
-                            score += 2;
-                        } else if (before.includes(item.contextBefore)) {
-                            score += 1;
-                        }
-                    }
-                    
-                    // Check context after
-                    if (item.contextAfter) {
-                        const after = match.index + normalizedText.length + item.contextAfter.length <= nodeText.length ?
-                            nodeText.substring(match.index + normalizedText.length, match.index + normalizedText.length + item.contextAfter.length) :
-                            nodeText.substring(match.index + normalizedText.length);
-                            
-                        if (after.startsWith(item.contextAfter)) {
-                            score += 2;
-                        } else if (after.includes(item.contextAfter)) {
-                            score += 1;
-                        }
-                    }
-                    
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestMatchIndex = i;
-                    }
-                }
-                
-                if (bestMatchIndex !== -1) {
-                    const match = matches[bestMatchIndex];
-                    applied = highlightTextNode(match.node, match.index, normalizedText.length, item.color, item.id);
-                    
-                    if (applied) {
-                        console.log(`Successfully applied highlight with context match (score: ${bestScore})`);
-                        continue; // Move to next highlight
-                    }
-                }
-            }
-            
-            // 3. Try case-insensitive match for single words
-            if (!applied && !normalizedText.includes(' ')) {
-                console.log('Trying case-insensitive match for single word');
-                const matches = findTextMatches(textNodes, normalizedText, true);
-                
-                if (matches.length > 0) {
-                    const match = matches[0]; // Use the first match
-                    applied = highlightTextNode(match.node, match.index, match.length, item.color, item.id);
-                    
-                    if (applied) {
-                        console.log('Successfully applied highlight with case-insensitive match');
-                        continue; // Move to next highlight
-                    }
-                }
-            }
-            
-            // 4. For phrases, try partial matching
-            if (!applied && normalizedText.includes(' ')) {
-                console.log('Trying partial match for phrase');
-                const words = normalizedText.split(' ');
-                
-                // Try with decreasing number of words
-                for (let wordCount = words.length - 1; wordCount >= 1; wordCount--) {
-                    const partialText = words.slice(0, wordCount).join(' ');
-                    console.log(`Trying with partial text: "${partialText}"`);
-                    
-                    const matches = findTextMatches(textNodes, partialText, false);
-                    
-                    if (matches.length > 0) {
-                        const match = matches[0]; // Use the first match
-                        applied = highlightTextNode(match.node, match.index, partialText.length, item.color, item.id);
-                        
-                        if (applied) {
-                            console.log(`Successfully applied highlight with partial text "${partialText}"`);
-                            break; // Exit the for loop
-                        }
-                    }
-                }
-                
-                if (applied) continue; // Move to next highlight
-            }
-            
-            // 5. Last resort: try with first word only for phrases
-            if (!applied && normalizedText.includes(' ')) {
-                console.log('Trying with first word only');
-                const firstWord = normalizedText.split(' ')[0];
-                const matches = findTextMatches(textNodes, firstWord, true);
-                
-                if (matches.length > 0) {
-                    const match = matches[0]; // Use the first match
-                    applied = highlightTextNode(match.node, match.index, match.length, item.color, item.id);
-                    
-                    if (applied) {
-                        console.log(`Successfully applied highlight with first word "${firstWord}"`);
-                        continue; // Move to next highlight
-                    }
-                }
-            }
-            
-            if (!applied) {
-                console.warn(`Failed to reapply highlight: "${normalizedText}"`);
-            }
-        } 
-        catch (err) {
-            console.error(`Error reapplying highlight:`, err);
-        }
-    }
-    
-    // Final cleanup - remove any nested highlights and normalize DOM
-    cleanupHighlights(container);
+    // Final cleanup
+    setTimeout(() => {
+        cleanupHighlights(container);
+    }, highlights.length * 100 + 100);
 }
 
 /**
- * Find all occurrences of text in text nodes.
- * @param textNodes Array of text nodes to search
- * @param searchText Text to search for
- * @param caseInsensitive Whether to do case-insensitive matching
- * @returns Array of matches with node, index and length
+ * Process highlights one by one with a small delay
  */
-function findTextMatches(
-    textNodes: Text[], 
-    searchText: string,
-    caseInsensitive: boolean
-): Array<{ node: Text; index: number; length: number }> {
-    const matches: Array<{ node: Text; index: number; length: number }> = [];
+function processNextHighlight(
+    highlights: HighlightData[],
+    index: number,
+    container: HTMLElement
+): void {
+    if (index >= highlights.length) return;
     
-    for (const node of textNodes) {
-        const nodeText = node.nodeValue || '';
+    const item = highlights[index];
+    
+    try {
+        const normalizedText = item.text.trim().replace(/\s+/g, ' ');
+        console.log(`Processing highlight: "${normalizedText}" (ID: ${item.id})`);
         
-        if (caseInsensitive) {
-            // Case-insensitive search
-            const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-            let match;
+        // Find all occurrences of this text on the page
+        const allOccurrences: {
+            node: Text,
+            startOffset: number,
+            text: string
+        }[] = findAllTextOccurrences(normalizedText);
+        
+        console.log(`Found ${allOccurrences.length} occurrences of "${normalizedText}"`);
+        
+        // Use the stored page index if available
+        if (item.pageIndex !== undefined && item.pageIndex >= 0 && item.pageIndex < allOccurrences.length) {
+            const occurrence = allOccurrences[item.pageIndex];
             
-            while ((match = regex.exec(nodeText)) !== null) {
-                matches.push({ 
-                    node, 
-                    index: match.index, 
-                    length: match[0].length 
-                });
+            // Double check with console log
+            console.log(`Targeting specific occurrence #${item.pageIndex} at node:`, occurrence.node, 'offset:', occurrence.startOffset);
+            console.log(`Occurrence text: "${occurrence.text.substring(0, 20)}..."`);
+            console.log(`Occurrence parent: ${occurrence.node.parentNode?.nodeName}`);
+            console.log(`Occurrence siblings: ${occurrence.node.parentNode?.childNodes.length}`);
+            
+            // Add visual indicator to verify we're getting the right position
+            if (!normalizedText.includes(' ')) {
+                // For debugging - highlight each occurrence briefly in red before applying the actual highlight
+                for (let i = 0; i < allOccurrences.length; i++) {
+                    const occ = allOccurrences[i];
+                    try {
+                        // Create a temporary range and style
+                        const tempRange = document.createRange();
+                        tempRange.setStart(occ.node, occ.startOffset);
+                        tempRange.setEnd(occ.node, occ.startOffset + occ.text.length);
+                        
+                        // Create a small indicator span to show the index
+                        const indexSpan = document.createElement('span');
+                        indexSpan.style.fontSize = '9px';
+                        indexSpan.style.position = 'absolute';
+                        indexSpan.style.backgroundColor = i === item.pageIndex ? 'green' : 'red';
+                        indexSpan.style.color = 'white';
+                        indexSpan.style.padding = '2px';
+                        indexSpan.style.zIndex = '9999';
+                        indexSpan.textContent = `#${i}`;
+                        document.body.appendChild(indexSpan);
+                        
+                        // Position it near the occurrence
+                        const tempSpan = document.createElement('span');
+                        const clonedContents = tempRange.cloneContents();
+                        tempSpan.appendChild(clonedContents);
+                        tempSpan.style.position = 'absolute';
+                        tempSpan.style.visibility = 'hidden';
+                        document.body.appendChild(tempSpan);
+                        const rect = tempSpan.getBoundingClientRect();
+                        document.body.removeChild(tempSpan);
+                        
+                        indexSpan.style.top = `${window.scrollY + rect.top - 15}px`;
+                        indexSpan.style.left = `${window.scrollX + rect.left}px`;
+                        
+                        // Remove after a few seconds
+                        setTimeout(() => {
+                            if (indexSpan.parentNode) {
+                                indexSpan.parentNode.removeChild(indexSpan);
+                            }
+                        }, 3000);
+                    } catch (e) {
+                        console.error('Error showing debug indicator:', e);
+                    }
+                }
             }
-        } else {
-            // Case-sensitive exact search
-            let position = 0;
-            let index = nodeText.indexOf(searchText, position);
             
-            while (index !== -1) {
-                matches.push({ 
-                    node, 
-                    index, 
-                    length: searchText.length 
+            // Add a small delay to let the visual indicators appear first
+            setTimeout(() => {
+                const success = highlightTextNode(
+                    occurrence.node,
+                    occurrence.startOffset,
+                    occurrence.text.length,
+                    item.color,
+                    item.id
+                );
+                
+                if (success) {
+                    console.log(`Successfully highlighted occurrence #${item.pageIndex}`);
+                } else {
+                    console.warn(`Failed to highlight occurrence #${item.pageIndex}, will try fallback`);
+                    applyFallbackHighlight(allOccurrences, item);
+                }
+                
+                // Process next highlight
+                setTimeout(() => {
+                    processNextHighlight(highlights, index + 1, container);
+                }, 50);
+            }, 50);
+        } else {
+            applyFallbackHighlight(allOccurrences, item);
+            
+            // Process next highlight
+            setTimeout(() => {
+                processNextHighlight(highlights, index + 1, container);
+            }, 50);
+        }
+    } 
+    catch (err) {
+        console.error(`Error reapplying highlight:`, err);
+        
+        // Even if error, process next highlight
+        setTimeout(() => {
+            processNextHighlight(highlights, index + 1, container);
+        }, 50);
+    }
+}
+
+/**
+ * Find all occurrences of text on the page
+ */
+function findAllTextOccurrences(text: string): Array<{node: Text, startOffset: number, text: string}> {
+    const occurrences: Array<{node: Text, startOffset: number, text: string}> = [];
+    const textToFind = text.trim();
+    
+    // If text is empty, return empty array
+    if (!textToFind) return occurrences;
+    
+    // Determine if we need word boundaries based on content
+    // Only use word boundaries for single words without special characters
+    const useWordBoundaries = !textToFind.includes(' ') && 
+                             /^[\w\-]+$/.test(textToFind);
+    
+    // Create regex with or without word boundaries
+    const regex = useWordBoundaries ? 
+        new RegExp(`\\b${escapeRegExp(textToFind)}\\b`, 'g') : 
+        new RegExp(escapeRegExp(textToFind), 'g');
+    
+    console.log(`Using ${useWordBoundaries ? 'word boundaries' : 'no boundaries'} for search: "${textToFind}"`);
+    
+    // Walk through all text nodes in the document
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        {
+            acceptNode: (node: Node): number => {
+                // Skip style, script, and empty text nodes
+                const parentNode = node.parentNode;
+                if (!parentNode || 
+                    parentNode.nodeName === 'STYLE' || 
+                    parentNode.nodeName === 'SCRIPT' ||
+                    (parentNode instanceof Element && parentNode.classList.contains('custom-highlight')) ||
+                    !node.textContent || 
+                    node.textContent.trim() === '') {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                
+                // Skip nodes that don't contain our text
+                if (!node.textContent.includes(textToFind)) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        } as NodeFilter
+    );
+    
+    // Go through each text node and find all occurrences
+    let node: Node | null;
+    while (node = walker.nextNode()) {
+        if (node instanceof Text) {
+            const nodeText = node.textContent || '';
+            
+            let match: RegExpExecArray | null;
+            while ((match = regex.exec(nodeText)) !== null) {
+                occurrences.push({
+                    node: node,
+                    startOffset: match.index,
+                    text: match[0]
                 });
-                position = index + searchText.length;
-                index = nodeText.indexOf(searchText, position);
             }
         }
     }
     
-    return matches;
+    return occurrences;
+}
+
+// Helper function to escape special regex characters
+function escapeRegExp(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -349,4 +334,25 @@ export function applyHighlightToTextNode(
     id: string
 ): boolean {
     return highlightTextNode(node, startIndex, length, color, id);
+}
+
+// Helper function to apply fallback highlight
+function applyFallbackHighlight(allOccurrences: Array<{node: Text, startOffset: number, text: string}>, item: HighlightData): void {
+    // Fallback: use the first occurrence
+    if (allOccurrences.length > 0) {
+        const occurrence = allOccurrences[0];
+        const success = highlightTextNode(
+            occurrence.node,
+            occurrence.startOffset,
+            occurrence.text.length,
+            item.color,
+            item.id
+        );
+        
+        if (success) {
+            console.log(`Fallback: highlighted first occurrence`);
+        }
+    } else {
+        console.warn(`Failed to reapply highlight: "${item.text}" - no occurrences found`);
+    }
 }
