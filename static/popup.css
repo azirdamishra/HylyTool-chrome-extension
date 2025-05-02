@@ -148,6 +148,21 @@ section h2 {
     margin: 0;
 }
 
+/* Disabled state for checkbox labels */
+.checkbox-label.disabled, 
+.checkbox-label input[type="checkbox"]:disabled + span {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Input fields in disabled state */
+input[type="checkbox"]:disabled,
+input[type="text"]:disabled,
+input[type="color"]:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 /* Color picker */
 input[type="color"] {
     width: 100%;
@@ -161,4 +176,56 @@ input[type="color"] {
 input[type="color"]:focus {
     outline: none;
     border-color: #2196F3;
+}
+
+/* Color swatches */
+.color-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.color-swatches.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.color-swatch {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px solid #ddd;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.color-swatch:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.color-swatch:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+}
+
+.color-swatch.selected {
+    border-color: #333;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+.custom-color-button {
+    background-color: #f8f9fa;
+    font-size: 20px;
+    font-weight: bold;
+    color: #666;
+}
+
+.custom-color-button:hover {
+    background-color: #e9ecef;
 }
