@@ -4,13 +4,46 @@
     <link rel="stylesheet" type="text/css" href="popup.css">
     <title>HylyTool Extension</title>
   </head>
+
   <body>
-    <label class="switch">
-      <input id="enabled" type="checkbox">
-      <span class="slider round"></span>
-    </label>
-    <h2>Hello, this is HylyTool!</h2>
-    <input class="secret" id="item" type="text">
+    <div class="popup-container">
+      <header class="popup-header">
+        <h1>HylyTool</h1>
+        <div class="toggle-container">
+          <label class="switch">
+            <input id="enabled" type="checkbox">
+            <span class="slider round"></span>
+          </label>
+          <span class="toggle-label">Enable Extension</span>
+        </div>
+      </header>
+
+      <main class="popup-content">
+        <section class="blur-section">
+          <h2>Text Blurring</h2>
+          <div class="input-group">
+            <label for="item">Text to blur:</label>
+            <input class="secret" id="item" type="text" placeholder="Enter text to blur">
+          </div>
+        </section>
+
+        <section class="highlight-section">
+          <h2>Text Highlighting</h2>
+          <div class="input-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="highlight-mode">
+              <span>Enable Highlight Mode</span>
+            </label>
+          </div>
+          <div class="input-group">
+            <label for="color-picker">Highlight Color:</label>
+            <input type="color" id="color-picker" value="#ffff00">
+          </div>
+        </section>
+      </main>
+    </div>
+
     <script src="popup.js"></script>
+
   </body>
 </html>
