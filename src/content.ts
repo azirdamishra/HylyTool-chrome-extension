@@ -137,12 +137,27 @@ chrome.storage.local.get(['highlightMode', 'highlightColor'], (data) => {
                     let cleanText = selection.toString().trim().replace(/\s+/g, ' ');
                     if(cleanText.length > 100) cleanText = cleanText.slice(0, 100);
                     
-                    //store the highlight
+                    // Find the occurrence number (position) of this text
+                    // and gather context information
+                    const occurrencePosition = findOccurrencePosition(range.startContainer as Text, cleanText);
+                    
+                    // Get context before and after the highlight
+                    const nodeText = range.startContainer.textContent || '';
+                    const startOffset = range.startOffset;
+                    const contextBefore = startOffset >= 50 
+                        ? nodeText.substring(startOffset - 50, startOffset) 
+                        : nodeText.substring(0, startOffset);
+                    const contextAfter = nodeText.substring(range.endOffset, range.endOffset + 50);
+                    
+                    //store the highlight with context
                     const highlightData = {
                         id: highlightId,
                         text: cleanText,
                         color: highlightColor,
-                        html: span.outerHTML
+                        html: span.outerHTML,
+                        position: occurrencePosition,
+                        contextBefore,
+                        contextAfter
                     };
 
                     const pageKey = window.location.href;
@@ -202,3 +217,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
     }
 });
+
+/**
+ * Finds the occurrence position (0-based) of a text string in a text node
+ * @param node The text node
+ * @param text The text to find
+ * @returns The occurrence position (0 for first, 1 for second, etc.)
+ */
+function findOccurrencePosition(node: Text, text: string): number {
+    const fullText = node.textContent || '';
+    let position = 0;
+    let lastIndex = 0;
+    
+    // Set the initial index to the start of the text node
+    const selectedIndex = fullText.indexOf(text);
+    
+    // Count the occurrences before the selected text
+    while(lastIndex < selectedIndex && lastIndex !== -1) {
+        lastIndex = fullText.indexOf(text, lastIndex + 1);
+        if(lastIndex !== -1 && lastIndex < selectedIndex) {
+            position++;
+        }
+    }
+    
+    return position;
+}
