@@ -61,13 +61,19 @@ input.addEventListener("change", (event) => {
 })
 
 document.addEventListener("DOMContentLoaded", () => {
+    //Blur control buttons
+    const applyBlurButton = document.getElementById("apply-blur") as HTMLButtonElement;
+    const removeBlurButton = document.getElementById("remove-blur") as HTMLButtonElement;
+    const blurTextInput = document.getElementById("item") as HTMLInputElement;
+
+    //Highlight control buttons
     const highlightToggle = document.getElementById("highlight-mode") as HTMLInputElement;
     const colorPicker = document.getElementById("color-picker") as HTMLInputElement;
     const colorSwatches = document.querySelectorAll(".color-swatch") as NodeListOf<HTMLButtonElement>;
     const customColorButton = document.querySelector(".custom-color-button") as HTMLButtonElement;
-    const popupContainer = document.querySelector(".popup-container") as HTMLElement;
+    //const popupContainer = document.querySelector(".popup-container") as HTMLElement;
     const extensionToggle = document.getElementById("enabled") as HTMLInputElement;
-    const highlightSection = document.querySelector(".highlight-section") as HTMLElement;
+    //const highlightSection = document.querySelector(".highlight-section") as HTMLElement;
     const highlightLabel = document.querySelector(".checkbox-label") as HTMLElement;
     let colorPickerActive = false;
 
@@ -232,5 +238,53 @@ document.addEventListener("DOMContentLoaded", () => {
         // Set the initial selected swatch
         updateSelectedColor(savedColor);
     });
+
+    //Apply blur without page reload
+    applyBlurButton.addEventListener("click", async () => {
+        const textToBlur = blurTextInput.value.trim();
+        if(!textToBlur) return;
+
+        //save to storage
+        await chrome.storage.sync.set({"item": textToBlur});
+
+        //Send message to content script to apply blur immediately
+        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+        if(tabs[0]?.id){
+            try{
+                await chrome.tabs.sendMessage(tabs[0].id, {
+                    action: 'applyBlur',
+                    text: textToBlur
+                });
+                console.log(`Applied blur to text: ${textToBlur}`);
+            }
+            catch(err){
+                console.warn(`Could not send message to tab: `, err);
+            }
+        }
+    });
+
+    //Remove all blur effects
+    removeBlurButton.addEventListener("click", async () => {
+        //Clear the input field
+        blurTextInput.value = "";
+
+        //Save empty string to storage
+        await chrome.storage.sync.set({"item": ""});
+
+        //Send message to content script to remove blur
+        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+        if(tabs[0]?.id){
+            try{
+                await chrome.tabs.sendMessage(tabs[0].id, {
+                    action: 'removeBlur'
+                });
+                console.log("Removed all blur effects");
+            }
+            catch(err){
+                console.warn(`Could not send message to tab: `, err)
+            }
+        }
+    });
+    
 });
 
