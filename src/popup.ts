@@ -8,10 +8,33 @@ chrome.storage.sync.get("enabled", (data) => {
     checkBox.checked = !!data.enabled
     void setBadgeText(data.enabled)
 })
+
+//send message to content script in all tabs
+async function notifyTabs(enabled: boolean) {
+    try {
+        const tabs = await chrome.tabs.query({});
+        for (const tab of tabs) {
+            if (tab.id) {
+                try {
+                    await chrome.tabs.sendMessage(tab.id, { action: 'extensionStateChanged', enabled });
+                    console.info(`Message sent to tab ${tab.id}`);
+                    console.info(`Popup received response from tab with title '%s' and url %s`, tab.title, tab.url)
+                } catch (err) {
+                    console.warn(`Could not send message to tab ${tab.id}:`, err);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('Error querying tabs:', err);
+    }
+}
+
 checkBox.addEventListener("change", (event) => {
     if(event.target instanceof HTMLInputElement){
-        void chrome.storage.sync.set({"enabled": event.target.checked})
-        void setBadgeText(event.target.checked)
+        const enabled = event.target.checked;
+        void chrome.storage.sync.set({"enabled": enabled})
+        void setBadgeText(enabled)
+        void notifyTabs(enabled)
     }
 })
 
@@ -47,3 +70,4 @@ document.addEventListener("DOMContentLoaded", () => {
         if (colorPicker) colorPicker.value = data.highlightColor || "#ffff00";
     });
 });
+

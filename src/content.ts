@@ -67,6 +67,26 @@ const keys = ["enabled", "item"]
 
 console.log("Content script initialized");
 
+//Only start observing the DOM if the extension is enabled and there is text to blur
+function observe(){
+    if(enabled && textToBlur.trim().length > 0)
+    {
+        observer.observe(document, {
+            attributes: false,
+            characterData: true,
+            childList: true,
+            subtree: true
+        })
+
+        processNode(document);
+    } else {
+        console.log("Not starting observation because:", {
+            enabled,
+            hasText: textToBlur.trim().length > 0
+        });
+    }
+}
+
 chrome.storage.sync.get(keys, (data) => {
     console.log("Storage data received:", data);
     
@@ -79,23 +99,7 @@ chrome.storage.sync.get(keys, (data) => {
         console.log("Text to blur set to:", textToBlur);
     }
 
-    //Only start observing the DOM if the extension is enabled and there is text to blur
-    if(enabled && textToBlur.trim().length > 0){
-        console.log("Starting DOM observation");
-        observer.observe(document, {
-            attributes: false,
-            characterData: true,
-            childList: true,
-            subtree: true
-        })
-        //Process the initial page content
-        processNode(document)
-    } else {
-        console.log("Not starting observation because:", {
-            enabled,
-            hasText: textToBlur.trim().length > 0
-        });
-    }
+    observe();
 })
 
 
@@ -177,3 +181,17 @@ chrome.runtime.onMessage.addListener((request) => {
         });
     }
 });
+
+//Listen for messages from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if(request.enabled !== undefined){
+        console.log("Received message from sender %s", sender.id, request);
+        enabled = request.enabled
+        if(enabled){
+            observe()
+        } else {
+            observer.disconnect()
+        }
+        sendResponse({title: document.title, url: window.location.href});
+    }
+})
