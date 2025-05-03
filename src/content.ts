@@ -22,24 +22,31 @@ function processNode(node: Node){
                 return
             }
             if (node.textContent.includes(textToBlur)){
-                // Create a span to wrap just the matching text
-                const span = document.createElement('span');
-                span.style.filter = blurFilter;
-                span.style.display = 'inline';
+                // Create a document fragment to hold our modified content
+                const fragment = document.createDocumentFragment();
                 
-                // Split the text and wrap the matching part
+                // Split the text by the blurred portion
                 const parts = node.textContent.split(textToBlur);
-                const textNode = document.createTextNode(parts.join(''));
                 
-                // Replace the original text node with our new structure
-                parent.replaceChild(textNode, node);
-                
-                // Insert the blurred spans between the parts
-                for (let i = 0; i < parts.length - 1; i++) {
-                    const blurSpan = span.cloneNode(true);
-                    blurSpan.textContent = textToBlur;
-                    parent.insertBefore(blurSpan, textNode);
+                //Rebuild the content with blurred spans in the correct positions
+                for(let i = 0; i < parts.length; i++){
+                    //Add the regular text part
+                    if(parts[i]){
+                        fragment.appendChild(document.createTextNode(parts[i]));
+                    }
+
+                    //Add the blurred span (except after the last part)
+                    if(i < parts.length - 1){
+                        const blurSpan = document.createElement('span');
+                        blurSpan.style.filter = blurFilter;
+                        blurSpan.style.display = 'inline';
+                        blurSpan.textContent = textToBlur;
+                        fragment.appendChild(blurSpan);
+                    }
                 }
+
+                //Replace the original node with our fragment containing ordered text
+                parent.replaceChild(fragment, node);
                 
                 console.log("Blurred specific text:", textToBlur);
             }
@@ -193,7 +200,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // Normalize the document to clean up text nodes
             document.body.normalize();
             console.log('Removed highlights from DOM');
+        } 
+
+    } else if(request.action === 'applyBlur'){
+        //Update the text to blur
+        textToBlur = request.text;
+        console.log("Applying blur to text: ", textToBlur);
+
+        //Process the document with the new text to blur
+        if(enabled && textToBlur){
+            //Remove existing blur before applying new
+            removeAllBlurredElements();
+            //Apply the new blur
+            processNode(document);
+            console.log("Blur applied without page reload");
         }
+
+        //Send response back
+        sendResponse({success: true});
+
+    } else if(request.action === 'removeBlur'){
+        //Clear the text to blur
+        textToBlur = "";
+        console.log("Removing the blur effects");
+
+        //Remove all blur effects
+        removeAllBlurredElements();
+        
+        //Send response back
+        sendResponse({success: true});
     }
 });
 
@@ -485,4 +520,20 @@ function findAllTextOccurrences(text: string): Array<{node: Text, startOffset: n
 // Helper function to escape special regex characters
 function escapeRegExp(string: string): string {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+//Helper function to remove all blurred elements
+function removeAllBlurredElements(){
+    const blurredElements = document.querySelectorAll(`span[style*="${blurFilter}"]`);
+    blurredElements.forEach(el => {
+        const parent = el.parentNode;
+        if(parent) {
+            //Replace the blurred span with its text content
+            parent.replaceChild(document.createTextNode(el.textContent || ''), el);
+        }
+    });
+
+    //Normalize the document to clean up text nodes
+    document.body.normalize();
+    console.log(`Removed ${blurredElements.length} blurred elements`);
 }

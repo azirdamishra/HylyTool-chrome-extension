@@ -229,3 +229,31 @@ input[type="color"]:focus {
 .custom-color-button:hover {
     background-color: #e9ecef;
 }
+
+.input-with-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.input-with-buttons input {
+  flex: 1;
+}
+
+.action-button {
+  padding: 8px 12px;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.2s;
+}
+
+.action-button:hover {
+  background-color: #0d8bf2;
+}
+
+.action-button:active {
+  background-color: #0c7cd5;
+}
