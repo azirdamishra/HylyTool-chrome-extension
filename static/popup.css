@@ -259,3 +259,9 @@ input[type="color"]:focus {
 .action-button:active {
   background-color: #0c7cd5;
 }
+
+.button-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
