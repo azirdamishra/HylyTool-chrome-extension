@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import { setBadgeText } from "./common";
 
 console.log("Hello world from Hylytool!");
@@ -6,7 +7,7 @@ console.log("Hello world from Hylytool!");
 const checkBox = document.getElementById("enabled") as HTMLInputElement;
 chrome.storage.sync.get("enabled", (data: { enabled?: boolean }) => {
   checkBox.checked = !!data.enabled;
-  void setBadgeText(!!data.enabled);
+  setBadgeText(!!data.enabled);
 });
 
 //send message to content script in all tabs
@@ -20,14 +21,14 @@ async function notifyTabs(enabled: boolean) {
             action: "extensionStateChanged",
             enabled,
           });
-          console.info(`Message sent to tab ${tab.id}`);
+          console.info(`Message sent to tab ${String(tab.id)}`);
           console.info(
             `Popup received response from tab with title '%s' and url %s`,
             tab.title,
             tab.url,
           );
         } catch (err) {
-          console.warn(`Could not send message to tab ${tab.id}:`, err);
+          console.warn(`Could not send message to tab ${String(tab.id)}:`, err);
         }
       }
     }
@@ -39,8 +40,9 @@ async function notifyTabs(enabled: boolean) {
 checkBox.addEventListener("change", (event) => {
   if (event.target instanceof HTMLInputElement) {
     const enabled = event.target.checked;
+    // Mark these promises as intentionally ignored
     void chrome.storage.sync.set({ enabled: enabled });
-    void setBadgeText(enabled);
+    setBadgeText(enabled);
     void notifyTabs(enabled);
 
     // When extension is disabled, also disable highlight mode
@@ -48,7 +50,7 @@ checkBox.addEventListener("change", (event) => {
       const highlightToggle = document.getElementById(
         "highlight-mode",
       ) as HTMLInputElement;
-      if (highlightToggle?.checked) {
+      if (highlightToggle.checked) {
         highlightToggle.checked = false;
         void chrome.storage.local.set({ highlightMode: false });
         console.log("Highlight mode disabled because extension was disabled");
@@ -90,19 +92,17 @@ document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll<HTMLButtonElement>(".color-swatch");
   const customColorButton = document.querySelector<HTMLButtonElement>(
     ".custom-color-button",
-  )!;
+  );
   const extensionToggle = document.getElementById(
     "enabled",
-  )! as HTMLInputElement;
-  const highlightLabel = document.querySelector(".checkbox-label")!;
+  ) as HTMLInputElement;
+  const highlightLabel = document.querySelector(".checkbox-label");
   let colorPickerActive = false;
 
   // Function to update highlight section based on extension status
   function updateHighlightSectionState(extensionEnabled: boolean) {
     // Update the disabled state of the highlight toggle
-    if (highlightToggle) {
-      highlightToggle.disabled = !extensionEnabled;
-    }
+    highlightToggle.disabled = !extensionEnabled;
 
     // Update the visual appearance
     if (highlightLabel) {
@@ -131,7 +131,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateHighlightSectionState(extensionEnabled);
 
     // If extension is disabled, also disable and uncheck highlight mode
-    if (!extensionEnabled && highlightToggle?.checked) {
+    if (!extensionEnabled && highlightToggle.checked) {
       highlightToggle.checked = false;
       void chrome.storage.local.set({ highlightMode: false });
     }
@@ -140,7 +140,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Function to update the selected color
   function updateSelectedColor(color: string) {
     // Remove 'selected' class from all swatches
-    colorSwatches.forEach((swatch) => swatch.classList.remove("selected"));
+    colorSwatches.forEach((swatch) => {
+      swatch.classList.remove("selected");
+    });
 
     // Add 'selected' class to the clicked swatch
     const selectedSwatch = Array.from(colorSwatches).find(
@@ -202,11 +204,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Single event listener for highlight toggle - only allow enabling if extension is enabled
   highlightToggle.addEventListener("change", () => {
     // If trying to enable highlight mode but extension is disabled, prevent it
-    if (
-      highlightToggle.checked &&
-      extensionToggle &&
-      !extensionToggle.checked
-    ) {
+    if (highlightToggle.checked && !extensionToggle.checked) {
       highlightToggle.checked = false;
       alert(
         "You must enable the extension first before enabling highlight mode.",
@@ -236,49 +234,58 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Initialize UI with the saved state
-  void Promise.all([
-    new Promise<{ highlightMode?: boolean; highlightColor?: string }>(
-      (resolve) => {
-        chrome.storage.local.get(
-          ["highlightMode", "highlightColor"],
-          (data: Record<string, unknown>) => {
-            resolve({
-              highlightMode: !!data.highlightMode,
-              highlightColor: data.highlightColor as string | undefined,
-            });
+  void (async () => {
+    try {
+      const [localData, syncData] = await Promise.all([
+        new Promise<{ highlightMode?: boolean; highlightColor?: string }>(
+          (resolve) => {
+            chrome.storage.local.get(
+              ["highlightMode", "highlightColor"],
+              (data: Record<string, unknown>) => {
+                resolve({
+                  highlightMode: !!data.highlightMode,
+                  highlightColor: data.highlightColor as string | undefined,
+                });
+              },
+            );
           },
-        );
-      },
-    ),
-    new Promise<{ enabled?: boolean }>((resolve) => {
-      chrome.storage.sync.get(["enabled"], (data: Record<string, unknown>) => {
-        resolve({ enabled: !!data.enabled });
-      });
-    }),
-  ]).then(([localData, syncData]) => {
-    const extensionEnabled = syncData.enabled === true;
+        ),
+        new Promise<{ enabled?: boolean }>((resolve) => {
+          chrome.storage.sync.get(
+            ["enabled"],
+            (data: Record<string, unknown>) => {
+              resolve({ enabled: !!data.enabled });
+            },
+          );
+        }),
+      ]);
 
-    // Apply highlight mode only if extension is enabled
-    if (highlightToggle) {
-      const shouldEnableHighlight =
-        localData.highlightMode === true && extensionEnabled;
-      highlightToggle.checked = shouldEnableHighlight;
+      const extensionEnabled = syncData.enabled === true;
 
-      // If extension is disabled, ensure highlight mode is also disabled in storage
-      if (!extensionEnabled && localData.highlightMode === true) {
-        void chrome.storage.local.set({ highlightMode: false });
+      // Apply highlight mode only if extension is enabled
+      if (highlightToggle) {
+        const shouldEnableHighlight =
+          localData.highlightMode === true && extensionEnabled;
+        highlightToggle.checked = shouldEnableHighlight;
+
+        // If extension is disabled, ensure highlight mode is also disabled in storage
+        if (!extensionEnabled && localData.highlightMode === true) {
+          void chrome.storage.local.set({ highlightMode: false });
+        }
       }
+
+      // Update the UI state based on extension status
+      updateHighlightSectionState(extensionEnabled);
+
+      const savedColor = localData.highlightColor ?? "#ffff00";
+      colorPicker.value = savedColor;
+
+      // Set the initial selected swatch
+      updateSelectedColor(savedColor);
+    } catch (err) {
+      console.error("Error initializing UI:", err);
     }
-
-    // Update the UI state based on extension status
-    updateHighlightSectionState(extensionEnabled);
-
-    const savedColor = localData.highlightColor ?? "#ffff00";
-    if (colorPicker) colorPicker.value = savedColor;
-
-    // Set the initial selected swatch
-    updateSelectedColor(savedColor);
-  });
+  })();
 
   //Apply blur without page reload
   applyBlurButton.addEventListener("click", () => {
@@ -295,13 +302,24 @@ document.addEventListener("DOMContentLoaded", () => {
           active: true,
           currentWindow: true,
         });
-        if (tabs[0]?.id) {
-          await chrome.tabs.sendMessage(tabs[0].id, {
-            action: "applyBlur",
-            text: textToBlur,
-          });
-          console.log(`Applied blur to text: ${textToBlur}`);
+
+        // Replace eslint-disable with explicit type guard function
+        if (tabs.length === 0) {
+          console.warn("No active tab found");
+          return;
         }
+
+        const tabId = tabs[0].id;
+        if (tabId === undefined) {
+          console.warn("Tab has no ID");
+          return;
+        }
+
+        await chrome.tabs.sendMessage(tabId, {
+          action: "applyBlur",
+          text: textToBlur,
+        });
+        console.log(`Applied blur to text: ${textToBlur}`);
       } catch (err) {
         console.warn(`Could not apply blur: `, err);
       }
@@ -323,12 +341,23 @@ document.addEventListener("DOMContentLoaded", () => {
           active: true,
           currentWindow: true,
         });
-        if (tabs[0]?.id) {
-          await chrome.tabs.sendMessage(tabs[0].id, {
-            action: "removeBlur",
-          });
-          console.log("Removed all blur effects");
+
+        // Replace eslint-disable with explicit type guard function
+        if (tabs.length === 0) {
+          console.warn("No active tab found");
+          return;
         }
+
+        const tabId = tabs[0].id;
+        if (tabId === undefined) {
+          console.warn("Tab has no ID");
+          return;
+        }
+
+        await chrome.tabs.sendMessage(tabId, {
+          action: "removeBlur",
+        });
+        console.log("Removed all blur effects");
       } catch (err) {
         console.warn(`Could not remove blur: `, err);
       }

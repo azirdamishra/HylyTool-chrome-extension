@@ -1,7 +1,5 @@
 "use strict";
-import {
-  reapplyHighlightsFromStorage,
-} from "./common";
+import { reapplyHighlightsFromStorage } from "./common";
 import { HighlightData } from "./common";
 
 const blurFilter = "blur(6px)";
@@ -19,10 +17,7 @@ function processNode(node: Node) {
   ) {
     const parent = node.parentElement;
     if (parent == null) return;
-    if (
-      parent != null &&
-      (parent.tagName === "SCRIPT" || parent.style.filter === blurFilter)
-    ) {
+    if (parent.tagName === "SCRIPT" || parent.style.filter === blurFilter) {
       //Already blurred
       return;
     }
@@ -146,22 +141,30 @@ chrome.storage.onChanged.addListener(
     namespace: string,
   ) => {
     if (namespace === "local") {
-      if (changes.highlightMode) {
-        highlightMode = !!changes.highlightMode.newValue;
+      // Handle highlight mode changes
+      const highlightModeChange = changes.highlightMode;
+      const colorChange = changes.highlightColor;
+
+      // Process highlight mode changes
+      if (typeof highlightModeChange !== "undefined") {
+        highlightMode = Boolean(highlightModeChange.newValue);
         console.log("Highlight mode changed to:", highlightMode);
 
-        // Add or remove event listener based on new value
+        // Update event listeners
+        document.removeEventListener("mouseup", handleMouseUp);
         if (highlightMode && enabled) {
-          document.removeEventListener("mouseup", handleMouseUp);
           document.addEventListener("mouseup", handleMouseUp);
-        } else {
-          document.removeEventListener("mouseup", handleMouseUp);
         }
       }
 
-      if (changes.highlightColor) {
-        highlightColor = changes.highlightColor.newValue as string;
-        console.log("Highlight color changed to:", highlightColor);
+      // Process color changes
+      if (typeof colorChange !== "undefined") {
+        // Safe type casting with explicit type assertion
+        const newValue: unknown = colorChange.newValue;
+        if (typeof newValue === "string") {
+          highlightColor = newValue;
+          console.log("Highlight color changed to:", highlightColor);
+        }
       }
     }
   },
@@ -226,7 +229,7 @@ chrome.runtime.onMessage.addListener(
       console.log("Applying blur to text: ", textToBlur);
 
       //Process the document with the new text to blur
-      if (enabled && textToBlur) {
+      if (enabled) {
         //Remove existing blur before applying new
         removeAllBlurredElements();
         //Apply the new blur
@@ -273,7 +276,7 @@ function addHighlight() {
   // Find all occurrences of this text on the page
   const allOccurrences = findAllTextOccurrences(cleanedText);
   console.log(
-    `Found ${allOccurrences.length} occurrences of "${cleanedText}" on the page`,
+    `Found ${String(allOccurrences.length)} occurrences of "${cleanedText}" on the page`,
   );
 
   // The selection range gives us exact information about the current selection
@@ -295,13 +298,15 @@ function addHighlight() {
       const offsetDiff = Math.abs(occurrence.startOffset - currentOffset);
 
       console.log(
-        `Checking occurrence #${i} - node match: true, offset: ${occurrence.startOffset}, diff: ${offsetDiff}`,
+        `Checking occurrence #${String(i)} - node match: true, offset: ${String(occurrence.startOffset)}, diff: ${String(offsetDiff)}`,
       );
 
       // If offset is exact or within a small error margin (sometimes selection offsets can be off by a character or two)
       if (offsetDiff <= 5) {
         matchingIndex = i;
-        console.log(`Found exact match at occurrence #${matchingIndex}`);
+        console.log(
+          `Found exact match at occurrence #${String(matchingIndex)}`,
+        );
         break;
       }
     }
@@ -313,8 +318,8 @@ function addHighlight() {
       const occurrence = allOccurrences[i];
 
       // Check if the node contains our selection's start node
-      if (occurrence.node?.contains?.(currentNode)) {
-        console.log(`Occurrence #${i} contains our selection node`);
+      if (occurrence.node.contains(currentNode)) {
+        console.log(`Occurrence #${String(i)} contains our selection node`);
 
         // Calculate total offset to see if our selection falls within this occurrence
         try {
@@ -331,7 +336,7 @@ function addHighlight() {
           ) {
             matchingIndex = i;
             console.log(
-              `Found containing match at occurrence #${matchingIndex} by offset calculation`,
+              `Found containing match at occurrence #${String(matchingIndex)} by offset calculation`,
             );
             break;
           }
@@ -372,7 +377,9 @@ function addHighlight() {
             Math.pow(selectionCenterY - occCenterY, 2),
         );
 
-        console.log(`Occurrence #${i} visual distance: ${distance}`);
+        console.log(
+          `Occurrence #${String(i)} visual distance: ${String(distance)}`,
+        );
 
         if (distance < closestDistance) {
           closestDistance = distance;
@@ -381,7 +388,7 @@ function addHighlight() {
       }
 
       console.log(
-        `Found closest visual match at occurrence #${matchingIndex} with distance ${closestDistance}`,
+        `Found closest visual match at occurrence #${String(matchingIndex)} with distance ${String(closestDistance)}`,
       );
     } catch (e) {
       console.error("Error calculating visual distances:", e);
@@ -397,11 +404,11 @@ function addHighlight() {
   }
 
   console.log(
-    `Selected occurrence index: ${matchingIndex} out of ${allOccurrences.length} total`,
+    `Selected occurrence index: ${String(matchingIndex)} out of ${String(allOccurrences.length)} total`,
   );
 
   // Create a new unique ID for this highlight
-  const highlightId = `highlight-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const highlightId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
 
   // Highlight the range with the assigned color
   const highlightElement = document.createElement("span");
@@ -563,5 +570,5 @@ function removeAllBlurredElements() {
 
   //Normalize the document to clean up text nodes
   document.body.normalize();
-  console.log(`Removed ${blurredElements.length} blurred elements`);
+  console.log(`Removed ${String(blurredElements.length)} blurred elements`);
 }

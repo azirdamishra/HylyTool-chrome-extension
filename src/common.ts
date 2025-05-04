@@ -53,7 +53,9 @@ function processNextHighlight(
 
   try {
     const normalizedText = item.text.trim().replace(/\s+/g, " ");
-    console.log(`Processing highlight: "${normalizedText}" (ID: ${item.id})`);
+    console.log(
+      `Processing highlight: "${normalizedText}" (ID: ${String(item.id)})`,
+    );
 
     // Find all occurrences of this text on the page
     const allOccurrences: {
@@ -63,7 +65,7 @@ function processNextHighlight(
     }[] = findAllTextOccurrences(normalizedText);
 
     console.log(
-      `Found ${allOccurrences.length} occurrences of "${normalizedText}"`,
+      `Found ${String(allOccurrences.length)} occurrences of "${normalizedText}"`,
     );
 
     // Use the stored page index if available
@@ -76,15 +78,17 @@ function processNextHighlight(
 
       // Double check with console log
       console.log(
-        `Targeting specific occurrence #${item.pageIndex} at node:`,
+        `Targeting specific occurrence #${String(item.pageIndex)} at node:`,
         occurrence.node,
         "offset:",
         occurrence.startOffset,
       );
       console.log(`Occurrence text: "${occurrence.text.substring(0, 20)}..."`);
-      console.log(`Occurrence parent: ${occurrence.node.parentNode?.nodeName}`);
       console.log(
-        `Occurrence siblings: ${occurrence.node.parentNode?.childNodes.length}`,
+        `Occurrence parent: ${String(occurrence.node.parentNode?.nodeName)}`,
+      );
+      console.log(
+        `Occurrence siblings: ${String(occurrence.node.parentNode?.childNodes.length)}`,
       );
 
       // Add visual indicator to verify we're getting the right position
@@ -107,7 +111,7 @@ function processNextHighlight(
             indexSpan.style.color = "white";
             indexSpan.style.padding = "2px";
             indexSpan.style.zIndex = "9999";
-            indexSpan.textContent = `#${i}`;
+            indexSpan.textContent = `#${String(i)}`;
             document.body.appendChild(indexSpan);
 
             // Position it near the occurrence
@@ -120,8 +124,8 @@ function processNextHighlight(
             const rect = tempSpan.getBoundingClientRect();
             document.body.removeChild(tempSpan);
 
-            indexSpan.style.top = `${window.scrollY + rect.top - 15}px`;
-            indexSpan.style.left = `${window.scrollX + rect.left}px`;
+            indexSpan.style.top = `${String(window.scrollY + rect.top - 15)}px`;
+            indexSpan.style.left = `${String(window.scrollX + rect.left)}px`;
 
             // Remove after a few seconds
             setTimeout(() => {
@@ -146,10 +150,12 @@ function processNextHighlight(
         );
 
         if (success) {
-          console.log(`Successfully highlighted occurrence #${item.pageIndex}`);
+          console.log(
+            `Successfully highlighted occurrence #${String(item.pageIndex)}`,
+          );
         } else {
           console.warn(
-            `Failed to highlight occurrence #${item.pageIndex}, will try fallback`,
+            `Failed to highlight occurrence #${String(item.pageIndex)}, will try fallback`,
           );
           applyFallbackHighlight(allOccurrences, item);
         }
@@ -263,7 +269,7 @@ function escapeRegExp(string: string): string {
  */
 function removeAllHighlights(container: HTMLElement): void {
   const highlights = container.querySelectorAll(".custom-highlight");
-  console.log(`Removing ${highlights.length} existing highlights`);
+  console.log(`Removing ${String(highlights.length)} existing highlights`);
 
   highlights.forEach((el) => {
     const parent = el.parentNode;
@@ -291,7 +297,9 @@ function cleanupHighlights(container: HTMLElement): void {
       console.warn("Found nested highlights - fixing");
       nestedHighlights.forEach((nested) => {
         const text = nested.textContent ?? "";
-        nested.parentNode?.replaceChild(document.createTextNode(text), nested);
+        if (nested.parentNode) {
+          nested.parentNode.replaceChild(document.createTextNode(text), nested);
+        }
       });
     }
   });
@@ -310,7 +318,7 @@ function highlightTextNode(
 ): boolean {
   try {
     // Validate parameters
-    if (node?.nodeValue == null) return false;
+    if (node.nodeValue == null) return false;
     if (startIndex < 0 || startIndex + length > node.length) {
       console.error("Invalid range:", {
         startIndex,
