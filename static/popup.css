@@ -1,233 +1,235 @@
 /* Base styles */
 body {
-    width: 300px;
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    color: #333;
+  width: 300px;
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+    Cantarell, sans-serif;
+  color: #333;
 }
 
 .popup-container {
-    padding: 16px;
+  padding: 16px;
 }
 
 /* Header styles */
 .popup-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee;
 }
 
 .popup-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-    color: #2196F3;
+  margin: 0;
+  font-size: 1.5rem;
+  color: #2196f3;
 }
 
 /* Toggle switch styles */
 .toggle-container {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .toggle-label {
-    font-size: 0.9rem;
-    color: #666;
+  font-size: 0.9rem;
+  color: #666;
 }
 
 .switch {
-    position: relative;
-    display: inline-block;
-    width: 40px;
-    height: 24px;
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 24px;
 }
 
 .switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
+  opacity: 0;
+  width: 0;
+  height: 0;
 }
 
 .slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: #ccc;
-    transition: .4s;
-    border-radius: 24px;
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: 0.4s;
+  border-radius: 24px;
 }
 
 .slider:before {
-    position: absolute;
-    content: "";
-    height: 18px;
-    width: 18px;
-    left: 3px;
-    bottom: 3px;
-    background-color: white;
-    transition: .4s;
-    border-radius: 50%;
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.4s;
+  border-radius: 50%;
 }
 
 input:checked + .slider {
-    background-color: #2196F3;
+  background-color: #2196f3;
 }
 
 input:checked + .slider:before {
-    transform: translateX(16px);
+  transform: translateX(16px);
 }
 
 /* Content sections */
 .popup-content {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 section {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px;
 }
 
 section h2 {
-    margin: 0 0 12px 0;
-    font-size: 1.1rem;
-    color: #444;
+  margin: 0 0 12px 0;
+  font-size: 1.1rem;
+  color: #444;
 }
 
 /* Input groups */
 .input-group {
-    margin-bottom: 12px;
+  margin-bottom: 12px;
 }
 
 .input-group:last-child {
-    margin-bottom: 0;
+  margin-bottom: 0;
 }
 
 .input-group label {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 0.9rem;
-    color: #666;
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+  color: #666;
 }
 
 .input-group input[type="text"] {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    box-sizing: border-box;
-    font-size: 0.9rem;
-    transition: border-color 0.2s;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font-size: 0.9rem;
+  transition: border-color 0.2s;
 }
 
 .input-group input[type="text"]:focus {
-    outline: none;
-    border-color: #2196F3;
-    box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.1);
+  outline: none;
+  border-color: #2196f3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.1);
 }
 
 /* Checkbox label */
 .checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
 }
 
 .checkbox-label input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    margin: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 /* Disabled state for checkbox labels */
-.checkbox-label.disabled, 
+.checkbox-label.disabled,
 .checkbox-label input[type="checkbox"]:disabled + span {
-    opacity: 0.6;
-    cursor: not-allowed;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Input fields in disabled state */
 input[type="checkbox"]:disabled,
 input[type="text"]:disabled,
 input[type="color"]:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Color picker */
 input[type="color"] {
-    width: 100%;
-    height: 32px;
-    padding: 2px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    cursor: pointer;
+  width: 100%;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
 input[type="color"]:focus {
-    outline: none;
-    border-color: #2196F3;
+  outline: none;
+  border-color: #2196f3;
 }
 
 /* Color swatches */
 .color-swatches {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .color-swatches.disabled {
-    opacity: 0.6;
-    pointer-events: none;
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 .color-swatch {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    border: 2px solid #ddd;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid #ddd;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .color-swatch:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .color-swatch:hover {
-    transform: scale(1.1);
-    box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+  transform: scale(1.1);
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
 }
 
 .color-swatch.selected {
-    border-color: #333;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+  border-color: #333;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
 }
 
 .custom-color-button {
-    background-color: #f8f9fa;
-    font-size: 20px;
-    font-weight: bold;
-    color: #666;
+  background-color: #f8f9fa;
+  font-size: 20px;
+  font-weight: bold;
+  color: #666;
 }
 
 .custom-color-button:hover {
-    background-color: #e9ecef;
+  background-color: #e9ecef;
 }
 
 .input-with-buttons {
@@ -241,7 +243,7 @@ input[type="color"]:focus {
 
 .action-button {
   padding: 8px 12px;
-  background-color: #2196F3;
+  background-color: #2196f3;
   color: white;
   border: none;
   border-radius: 4px;
