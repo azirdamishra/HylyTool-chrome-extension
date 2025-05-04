@@ -1,0 +1,45 @@
+name: Lint check, format check, and build
+
+on:
+  push:
+    branches:
+      - main
+    paths: # We only run the workflow if the code in these files/directories changes
+      - ".github/workflows/lint-and-format.yml" # This file
+  pull_request:
+    branches: [main, development, prod-ready]
+    paths:
+      - ".github/workflows/lint-and-format.yml"
+
+# This allows a subsequently queued workflow run to interrupt previous runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id}}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./4-linting-and-formatting
+
+permissions:
+  contents: read
+
+jobs:
+  lint-format-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install --no-save
+
+      - name: Format check and lint
+        run: |
+          npm run format-check
+          npm run lint
+
+      - name: Build
+        run: |
+          npm run build
