@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#002C58" />
+  
+  <!-- Toggle switch -->
+  <rect x="32" y="40" width="64" height="32" rx="16" fill="#002C58" stroke="#00162D" stroke-width="2" />
+  <circle cx="80" cy="56" r="16" fill="#FFCC00" />
+  
+  <!-- Lines on left side -->
+  <rect x="38" y="46" width="24" height="4" rx="2" fill="#2B9Aff" />
+  <rect x="38" y="56" width="24" height="4" rx="2" fill="#2B9Aff" />
+  <rect x="38" y="66" width="16" height="4" rx="2" fill="#2B9Aff" />
+  
+  <!-- Star -->
+  <path d="M96,24 L100,32 L108,33 L102,39 L104,47 L96,43 L88,47 L90,39 L84,33 L92,32 Z" fill="#FFCC00" />
+</svg> 
