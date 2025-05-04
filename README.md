@@ -28,17 +28,20 @@ HylyTool offers two main functionalities to improve your online reading and priv
 ### From Source
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/azirdamishra/HylyTool-chrome-extension.git
    cd HylyTool-chrome-extension
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Build the extension:
+
    ```bash
    npm run build
    ```
