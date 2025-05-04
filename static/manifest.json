@@ -3,14 +3,8 @@
   "description": "Chrome Extension for highlighting web documents",
   "version": "0.1.0",
   "manifest_version": 3,
-  "permissions": [
-    "storage",
-    "activeTab",
-    "scripting"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html"
   },
