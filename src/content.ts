@@ -8,6 +8,15 @@ import {
   findAllTextOccurrences,
   resolveOccurrenceIndex,
 } from "./common";
+import {
+  reapplyHighlightsFromStorage,
+  normalizeUrl,
+  captureContext,
+  syncGet,
+  syncSet,
+  findAllTextOccurrences,
+  resolveOccurrenceIndex,
+} from "./common";
 import { HighlightData } from "./common";
 
 const blurFilter = "blur(6px)";
@@ -211,6 +220,11 @@ chrome.storage.onChanged.addListener(
   },
 );
 
+let highlightsAppliedOnce = false;
+
+function applyHighlightsOnce(): void {
+  if (highlightsAppliedOnce || !enabled) return;
+  highlightsAppliedOnce = true;
 let highlightsAppliedOnce = false;
 
 function applyHighlightsOnce(): void {
