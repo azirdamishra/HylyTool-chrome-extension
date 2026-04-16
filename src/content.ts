@@ -225,7 +225,7 @@ function applyHighlightsOnce(): void {
     reapplyHighlightsFromStorage(highlights);
   });
 
-  setupDeleteTooltip();
+  setupDeleteContextMenu();
 }
 
 window.addEventListener("load", () => {
@@ -235,85 +235,141 @@ window.addEventListener("load", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete tooltip
+// Delete via right-click context menu
+//
+// A small custom menu is shown only when the user right-clicks on a
+// `.custom-highlight` span. This lets normal left-clicks fall through to any
+// underlying link/button (the previous click-tooltip would intercept those
+// and prevent users from following highlighted hyperlinks).
 // ---------------------------------------------------------------------------
 
 let activeHighlightId: string | null = null;
-let deleteTooltip: HTMLElement | null = null;
+let deleteMenu: HTMLElement | null = null;
 
-function setupDeleteTooltip() {
-  if (deleteTooltip) return; // guard against double-init
+function setupDeleteContextMenu() {
+  if (deleteMenu) return; // guard against double-init
 
-  deleteTooltip = document.createElement("div");
-  Object.assign(deleteTooltip.style, {
+  deleteMenu = document.createElement("div");
+  Object.assign(deleteMenu.style, {
     position: "absolute",
-    background: "#222",
-    color: "#fff",
-    borderRadius: "4px",
-    padding: "5px 10px",
-    fontSize: "12px",
-    cursor: "pointer",
+    background: "#ffffff",
+    color: "#222",
+    border: "1px solid rgba(0,0,0,0.12)",
+    borderRadius: "6px",
+    padding: "4px 0",
+    fontSize: "13px",
+    fontFamily:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     zIndex: "2147483647",
     display: "none",
     userSelect: "none",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
     whiteSpace: "nowrap",
-    lineHeight: "1.4",
+    minWidth: "150px",
   });
-  deleteTooltip.textContent = "Remove highlight";
-  document.body.appendChild(deleteTooltip);
 
-  // Delegated click: show tooltip when a highlight is clicked
-  document.addEventListener("click", (e) => {
-    if (!enabled) return;
-    const target = e.target as Element;
+  const removeItem = document.createElement("div");
+  removeItem.textContent = "Remove highlight";
+  Object.assign(removeItem.style, {
+    padding: "6px 14px",
+    cursor: "pointer",
+    color: "#222",
+  });
+  removeItem.addEventListener("mouseenter", () => {
+    removeItem.style.background = "#f0f0f0";
+  });
+  removeItem.addEventListener("mouseleave", () => {
+    removeItem.style.background = "";
+  });
+  removeItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removeActiveHighlight();
+  });
 
-    // If the tooltip itself was clicked, let its own listener handle it
-    if (deleteTooltip && (target === deleteTooltip || deleteTooltip.contains(target))) {
+  deleteMenu.appendChild(removeItem);
+  document.body.appendChild(deleteMenu);
+
+  // Show on right-click over a highlight
+  document.addEventListener("contextmenu", (e) => {
+    if (!enabled) {
+      hideDeleteMenu();
       return;
     }
-
-    const highlight = target.closest(".custom-highlight") as HTMLElement | null;
-    if (highlight) {
-      activeHighlightId = highlight.id;
-      const rect = highlight.getBoundingClientRect();
-      if (deleteTooltip) {
-        deleteTooltip.style.display = "block";
-        // Position above the span; fall back to below if near the top of viewport
-        const spaceAbove = rect.top;
-        const tooltipHeight = 30; // approximate
-        const top =
-          spaceAbove > tooltipHeight + 8
-            ? window.scrollY + rect.top - tooltipHeight - 6
-            : window.scrollY + rect.bottom + 6;
-        deleteTooltip.style.top = `${String(top)}px`;
-        deleteTooltip.style.left = `${String(window.scrollX + rect.left)}px`;
-      }
-      e.stopPropagation();
-    } else {
-      if (deleteTooltip) deleteTooltip.style.display = "none";
-      activeHighlightId = null;
+    const target = e.target as Element | null;
+    const highlight =
+      target?.closest?.(".custom-highlight") as HTMLElement | null;
+    if (!highlight?.id) {
+      hideDeleteMenu();
+      return;
     }
+    e.preventDefault();
+    activeHighlightId = highlight.id;
+    showDeleteMenuAt(e.pageX, e.pageY);
   });
 
-  deleteTooltip.addEventListener("click", () => {
-    if (!activeHighlightId) return;
-
-    const span = document.getElementById(activeHighlightId);
-    if (span?.parentNode) {
-      span.parentNode.replaceChild(
-        document.createTextNode(span.textContent ?? ""),
-        span,
-      );
-      document.body.normalize();
-    }
-
-    const pageKey = normalizeUrl(window.location.href);
-    enqueueRemoveHighlight(pageKey, activeHighlightId);
-
-    if (deleteTooltip) deleteTooltip.style.display = "none";
-    activeHighlightId = null;
+  // Hide on outside click, Escape, scroll, resize, or another contextmenu
+  document.addEventListener("click", (e) => {
+    if (!deleteMenu || deleteMenu.style.display === "none") return;
+    const t = e.target as Node | null;
+    if (t && deleteMenu.contains(t)) return;
+    hideDeleteMenu();
   });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideDeleteMenu();
+  });
+  window.addEventListener("scroll", hideDeleteMenu, true);
+  window.addEventListener("resize", hideDeleteMenu);
+  window.addEventListener("blur", hideDeleteMenu);
+}
+
+function showDeleteMenuAt(pageX: number, pageY: number) {
+  if (!deleteMenu) return;
+  // Render off-screen first to measure, then clamp to viewport edges
+  deleteMenu.style.display = "block";
+  deleteMenu.style.top = "-9999px";
+  deleteMenu.style.left = "-9999px";
+
+  const menuRect = deleteMenu.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const margin = 4;
+
+  const clientX = pageX - window.scrollX;
+  const clientY = pageY - window.scrollY;
+
+  const left =
+    clientX + menuRect.width > vw - margin
+      ? Math.max(margin, vw - menuRect.width - margin) + window.scrollX
+      : pageX;
+  const top =
+    clientY + menuRect.height > vh - margin
+      ? Math.max(margin, vh - menuRect.height - margin) + window.scrollY
+      : pageY;
+
+  deleteMenu.style.left = `${String(left)}px`;
+  deleteMenu.style.top = `${String(top)}px`;
+}
+
+function hideDeleteMenu() {
+  if (deleteMenu) deleteMenu.style.display = "none";
+  activeHighlightId = null;
+}
+
+function removeActiveHighlight() {
+  if (!activeHighlightId) return;
+
+  const span = document.getElementById(activeHighlightId);
+  if (span?.parentNode) {
+    span.parentNode.replaceChild(
+      document.createTextNode(span.textContent ?? ""),
+      span,
+    );
+    document.body.normalize();
+  }
+
+  const pageKey = normalizeUrl(window.location.href);
+  enqueueRemoveHighlight(pageKey, activeHighlightId);
+  hideDeleteMenu();
 }
 
 chrome.runtime.onMessage.addListener(
@@ -332,12 +388,9 @@ chrome.runtime.onMessage.addListener(
         highlightsAppliedOnce = false;
         applyHighlightsOnce();
       } else {
-        // Stop creating new highlights and hide the delete tooltip
+        // Stop creating new highlights and hide the delete context menu
         document.removeEventListener("mouseup", handleMouseUp);
-        if (deleteTooltip) {
-          deleteTooltip.style.display = "none";
-          activeHighlightId = null;
-        }
+        hideDeleteMenu();
         // Remove all highlight spans from the DOM
         const highlights = document.querySelectorAll(".custom-highlight");
         highlights.forEach((el) => {
