@@ -98,7 +98,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const extensionToggle = document.getElementById(
     "enabled",
   ) as HTMLInputElement;
-  let colorPickerActive = false;
+  const presetColorSwatches = Array.from(colorSwatches).filter(
+    (swatch) => !swatch.classList.contains("custom-color-button"),
+  );
+
+  function normalizeColorValue(color: string): string {
+    return color.trim().toLowerCase();
+  }
 
   // Disable / enable the color picker controls when the extension is toggled
   function updateHighlightSectionState(extensionEnabled: boolean) {
@@ -109,6 +115,7 @@ document.addEventListener("DOMContentLoaded", () => {
         swatch.disabled = !extensionEnabled;
         swatch.style.pointerEvents = extensionEnabled ? "auto" : "none";
       });
+      colorPicker.disabled = !extensionEnabled;
     }
   }
 
@@ -125,14 +132,25 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Add 'selected' class to the clicked swatch
-    const selectedSwatch = Array.from(colorSwatches).find(
+    const normalizedColor = normalizeColorValue(color);
+    const selectedSwatch = presetColorSwatches.find(
       (swatch) =>
-        swatch.dataset.color === color &&
-        !swatch.classList.contains("custom-color-button"),
+        normalizeColorValue(swatch.dataset.color ?? "") === normalizedColor,
     );
 
     if (selectedSwatch) {
       selectedSwatch.classList.add("selected");
+      customColorButton?.classList.remove("custom-color-active");
+      if (customColorButton) {
+        customColorButton.style.backgroundColor = "";
+        customColorButton.textContent = "+";
+        customColorButton.title = "Pick a custom color";
+      }
+    } else if (customColorButton) {
+      customColorButton.classList.add("selected", "custom-color-active");
+      customColorButton.style.backgroundColor = color;
+      customColorButton.textContent = "";
+      customColorButton.title = `Custom color: ${color}`;
     }
 
     // Update the color picker value
@@ -146,57 +164,21 @@ document.addEventListener("DOMContentLoaded", () => {
   colorSwatches.forEach((swatch) => {
     swatch.addEventListener("click", (e) => {
       if (swatch.classList.contains("custom-color-button")) {
-        // Show the color picker when the custom button is clicked
-        colorPicker.style.display = "block";
-        colorPickerActive = true;
-        // Use a small timeout to prevent immediate triggering of document click
-        setTimeout(() => {
-          colorPicker.click();
-        }, 50);
-        // Stop propagation to prevent document click from hiding the picker immediately
+        if (!extensionToggle.checked) return;
+        // Open native picker only when the + button is clicked.
+        colorPicker.click();
         e.stopPropagation();
       } else {
         const color = swatch.dataset.color ?? "#ffff00";
         updateSelectedColor(color);
-        colorPickerActive = false;
-        colorPicker.style.display = "none";
       }
     });
   });
 
-  // Hide color picker when clicking anywhere in the popup except the picker itself
-  document.addEventListener("click", (e) => {
-    if (
-      colorPickerActive &&
-      e.target !== colorPicker &&
-      e.target !== customColorButton
-    ) {
-      colorPicker.style.display = "none";
-      colorPickerActive = false;
-    }
-  });
-
-  // Prevent clicks on the color picker from bubbling up to document
-  colorPicker.addEventListener("click", (e) => {
-    e.stopPropagation();
-  });
-
   // Color picker event listener
-  colorPicker.addEventListener("change", (e) => {
+  colorPicker.addEventListener("change", () => {
     const color = colorPicker.value;
     updateSelectedColor(color);
-
-    // Don't immediately hide the color picker to allow for multiple adjustments
-    // It will be hidden when clicking outside
-    e.stopPropagation();
-  });
-
-  // Ensure color picker closes when ESC key is pressed
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && colorPickerActive) {
-      colorPicker.style.display = "none";
-      colorPickerActive = false;
-    }
   });
 
   // Initialize UI with the saved state

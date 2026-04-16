@@ -47,7 +47,6 @@
           <h2>Text Highlighting</h2>
           <div class="input-group">
             <label for="color-picker">Highlight Color:</label>
-            <input type="color" id="color-picker" value="#ffff00" />
             <div class="color-swatches">
               <button
                 class="color-swatch"
@@ -76,6 +75,13 @@
               ></button>
               <button class="color-swatch custom-color-button">+</button>
             </div>
+            <input
+              type="color"
+              id="color-picker"
+              class="hidden-color-picker"
+              value="#ffff00"
+              aria-label="Choose custom highlight color"
+            />
           </div>
           <div class="input-group">
             <label>Backup &amp; Restore:</label>

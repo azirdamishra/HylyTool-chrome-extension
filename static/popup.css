@@ -180,6 +180,19 @@ input[type="color"]:focus {
   border-color: #2196f3;
 }
 
+.hidden-color-picker {
+  position: fixed !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 /* Color swatches */
 .color-swatches {
   display: flex;
@@ -221,6 +234,11 @@ input[type="color"]:focus {
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
 }
 
+.color-swatches.disabled .color-swatch.selected {
+  border-color: #ddd;
+  box-shadow: none;
+}
+
 .custom-color-button {
   background-color: #f8f9fa;
   font-size: 20px;
@@ -230,6 +248,10 @@ input[type="color"]:focus {
 
 .custom-color-button:hover {
   background-color: #e9ecef;
+}
+
+.custom-color-button.custom-color-active {
+  color: transparent;
 }
 
 .input-with-buttons {
