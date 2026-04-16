@@ -1,6 +1,41 @@
 "use strict";
-import { reapplyHighlightsFromStorage } from "./common";
+import {
+  reapplyHighlightsFromStorage,
+  normalizeUrl,
+  captureContext,
+  syncGet,
+  syncSet,
+  findAllTextOccurrences,
+  resolveOccurrenceIndex,
+} from "./common";
 import { HighlightData } from "./common";
+
+const DEBUG_RUN_ID = "pre-fix";
+
+function agentDebugLog(
+  runId: string,
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  void fetch("http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "e78032",
+    },
+    body: JSON.stringify({
+      sessionId: "e78032",
+      runId,
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+}
 
 const blurFilter = "blur(6px)";
 let textToBlur = "";
@@ -64,11 +99,154 @@ const observer = new MutationObserver((mutations) => {
   });
 });
 
-//Enable the content script by default
-let enabled = true;
-let highlightMode = false;
+let enabled = false;
 let highlightColor = "#FFFF00";
 const keys: ("enabled" | "item")[] = ["enabled", "item"];
+let initComplete = false;
+let cachedPageKey: string | null = null;
+let cachedHighlights: HighlightData[] = [];
+let highlightSaveQueue: Promise<void> = Promise.resolve();
+let highlightWriteSeq = 0;
+
+function setHighlightCache(pageKey: string, highlights: HighlightData[]): void {
+  cachedPageKey = pageKey;
+  cachedHighlights = [...highlights];
+}
+
+function getCachedHighlights(pageKey: string): HighlightData[] {
+  if (cachedPageKey !== pageKey) return [];
+  return [...cachedHighlights];
+}
+
+function removePageKeyFromStorage(pageKey: string): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.remove(pageKey, () => {
+      chrome.storage.local.remove(pageKey, () => resolve());
+    });
+  });
+}
+
+function enqueuePersistHighlights(
+  pageKey: string,
+  highlights: HighlightData[],
+  source: "normal" | "fallback",
+): void {
+  const writeSeq = ++highlightWriteSeq;
+  const nextHighlights = [...highlights];
+  setHighlightCache(pageKey, nextHighlights);
+  // #region agent log
+  agentDebugLog(
+    DEBUG_RUN_ID,
+    "H6",
+    "content.ts:enqueuePersistHighlights",
+    "queued highlight persistence",
+    {
+      pageKey,
+      source,
+      writeSeq,
+      count: nextHighlights.length,
+    },
+  );
+  // #endregion
+  highlightSaveQueue = highlightSaveQueue
+    .then(async () => {
+      await syncSet(pageKey, nextHighlights);
+      // #region agent log
+      agentDebugLog(
+        DEBUG_RUN_ID,
+        "H6",
+        "content.ts:enqueuePersistHighlights",
+        "completed highlight persistence",
+        {
+          pageKey,
+          source,
+          writeSeq,
+          count: nextHighlights.length,
+        },
+      );
+      // #endregion
+    })
+    .catch((error: unknown) => {
+      // #region agent log
+      agentDebugLog(
+        DEBUG_RUN_ID,
+        "H6",
+        "content.ts:enqueuePersistHighlights",
+        "persistence queue error",
+        {
+          pageKey,
+          source,
+          writeSeq,
+          error:
+            error instanceof Error
+              ? `${error.name}: ${error.message}`
+              : "unknown queue error",
+        },
+      );
+      // #endregion
+    });
+}
+
+function enqueueRemoveHighlight(pageKey: string, highlightId: string): void {
+  const updated = getCachedHighlights(pageKey).filter((h) => h.id !== highlightId);
+  const writeSeq = ++highlightWriteSeq;
+  setHighlightCache(pageKey, updated);
+  // #region agent log
+  agentDebugLog(
+    DEBUG_RUN_ID,
+    "H6",
+    "content.ts:enqueueRemoveHighlight",
+    "queued highlight removal persistence",
+    {
+      pageKey,
+      highlightId,
+      writeSeq,
+      count: updated.length,
+    },
+  );
+  // #endregion
+  highlightSaveQueue = highlightSaveQueue
+    .then(async () => {
+      if (updated.length === 0) {
+        await removePageKeyFromStorage(pageKey);
+      } else {
+        await syncSet(pageKey, updated);
+      }
+      // #region agent log
+      agentDebugLog(
+        DEBUG_RUN_ID,
+        "H6",
+        "content.ts:enqueueRemoveHighlight",
+        "completed highlight removal persistence",
+        {
+          pageKey,
+          highlightId,
+          writeSeq,
+          count: updated.length,
+        },
+      );
+      // #endregion
+    })
+    .catch((error: unknown) => {
+      // #region agent log
+      agentDebugLog(
+        DEBUG_RUN_ID,
+        "H6",
+        "content.ts:enqueueRemoveHighlight",
+        "removal queue error",
+        {
+          pageKey,
+          highlightId,
+          writeSeq,
+          error:
+            error instanceof Error
+              ? `${error.name}: ${error.message}`
+              : "unknown queue error",
+        },
+      );
+      // #endregion
+    });
+}
 
 console.log("Content script initialized");
 
@@ -94,72 +272,83 @@ function observe() {
 chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
   console.log("Storage data received:", data);
 
-  if (data.enabled === false) {
-    enabled = false;
-    console.log("Extension disabled");
-  }
+  enabled = data.enabled !== false;
+  if (!enabled) console.log("Extension disabled");
+
   if (data.item) {
     textToBlur = data.item;
     console.log("Text to blur set to:", textToBlur);
   }
 
   observe();
+
+  chrome.storage.local.get(
+    ["highlightColor"],
+    (colorData: { highlightColor?: string }) => {
+      if (colorData.highlightColor) {
+        highlightColor = colorData.highlightColor;
+      }
+
+      if (enabled) {
+        console.log("Setting up highlight event listener");
+        document.addEventListener("mouseup", handleMouseUp);
+      }
+
+      initComplete = true;
+      // #region agent log
+      agentDebugLog(
+        DEBUG_RUN_ID,
+        "H7",
+        "content.ts:init",
+        "init complete",
+        { enabled, highlightColor, initComplete: true },
+      );
+      // #endregion
+
+      if (enabled && document.readyState === "complete") {
+        applyHighlightsOnce();
+      }
+    },
+  );
 });
-
-//highlighting text
-chrome.storage.local.get(
-  ["highlightMode", "highlightColor"],
-  (data: { highlightMode?: boolean; highlightColor?: string }) => {
-    console.log("Initial highlight mode state:", data);
-    highlightMode = !!data.highlightMode;
-    if (data.highlightColor) {
-      highlightColor = data.highlightColor;
-    }
-
-    if (highlightMode && enabled) {
-      console.log("Setting up highlight event listener");
-      document.addEventListener("mouseup", handleMouseUp);
-    }
-  },
-);
 
 // Handle mouseup event for highlighting
 function handleMouseUp() {
-  if (!highlightMode || !enabled) return;
+  if (!enabled) return;
+  if (!chrome.runtime?.id) return;
 
   const selection = window.getSelection();
   if (selection?.toString()) {
+    // #region agent log
+    agentDebugLog(
+      DEBUG_RUN_ID,
+      "H4",
+      "content.ts:handleMouseUp",
+      "mouseup with non-empty selection",
+      {
+        selectionTextLength: selection.toString().length,
+        rangeCount: selection.rangeCount,
+        anchorParentIsHighlight:
+          selection.anchorNode?.parentElement?.classList.contains(
+            "custom-highlight",
+          ) ?? false,
+      },
+    );
+    // #endregion
     console.log("Selection made:", selection.toString());
     addHighlight();
   }
 }
 
-// Update highlightMode when it changes
+// React to highlight color changes from the popup
 chrome.storage.onChanged.addListener(
   (
     changes: Record<string, chrome.storage.StorageChange>,
     namespace: string,
   ) => {
     if (namespace === "local") {
-      // Handle highlight mode changes
-      const highlightModeChange = changes.highlightMode;
       const colorChange = changes.highlightColor;
-
-      // Process highlight mode changes
-      if (typeof highlightModeChange !== "undefined") {
-        highlightMode = Boolean(highlightModeChange.newValue);
-        console.log("Highlight mode changed to:", highlightMode);
-
-        // Update event listeners
-        document.removeEventListener("mouseup", handleMouseUp);
-        if (highlightMode && enabled) {
-          document.addEventListener("mouseup", handleMouseUp);
-        }
-      }
-
-      // Process color changes
       if (typeof colorChange !== "undefined") {
-        // Safe type casting with explicit type assertion
         const newValue: unknown = colorChange.newValue;
         if (typeof newValue === "string") {
           highlightColor = newValue;
@@ -170,21 +359,122 @@ chrome.storage.onChanged.addListener(
   },
 );
 
-//on every page load, the content script checks for existing highlights in chrome storage and reapplies them
-window.addEventListener("load", () => {
-  if (!enabled) return; //Don't show highlights if extension is disabled
+let highlightsAppliedOnce = false;
 
-  const pageKey = window.location.href;
+function applyHighlightsOnce(): void {
+  if (highlightsAppliedOnce || !enabled) return;
+  highlightsAppliedOnce = true;
+
+  const pageKey = normalizeUrl(window.location.href);
   console.log("Loading highlights for page:", pageKey);
-  chrome.storage.local.get(
-    [pageKey],
-    (data: Record<string, HighlightData[]>) => {
-      const highlights = data[pageKey] ?? [];
-      console.log("Found highlights:", highlights);
-      reapplyHighlightsFromStorage(highlights);
-    },
-  );
+  void syncGet(pageKey).then((highlights) => {
+    setHighlightCache(pageKey, highlights);
+    // #region agent log
+    agentDebugLog(
+      DEBUG_RUN_ID,
+      "H6",
+      "content.ts:applyHighlightsOnce",
+      "loaded highlights into cache",
+      {
+        pageKey,
+        count: highlights.length,
+      },
+    );
+    // #endregion
+    console.log("Found highlights:", highlights);
+    reapplyHighlightsFromStorage(highlights);
+  });
+
+  setupDeleteTooltip();
+}
+
+window.addEventListener("load", () => {
+  if (initComplete) {
+    applyHighlightsOnce();
+  }
 });
+
+// ---------------------------------------------------------------------------
+// Delete tooltip
+// ---------------------------------------------------------------------------
+
+let activeHighlightId: string | null = null;
+let deleteTooltip: HTMLElement | null = null;
+
+function setupDeleteTooltip() {
+  if (deleteTooltip) return; // guard against double-init
+
+  deleteTooltip = document.createElement("div");
+  Object.assign(deleteTooltip.style, {
+    position: "absolute",
+    background: "#222",
+    color: "#fff",
+    borderRadius: "4px",
+    padding: "5px 10px",
+    fontSize: "12px",
+    cursor: "pointer",
+    zIndex: "2147483647",
+    display: "none",
+    userSelect: "none",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+    whiteSpace: "nowrap",
+    lineHeight: "1.4",
+  });
+  deleteTooltip.textContent = "Remove highlight";
+  document.body.appendChild(deleteTooltip);
+
+  // Delegated click: show tooltip when a highlight is clicked
+  document.addEventListener("click", (e) => {
+    if (!enabled) return;
+    const target = e.target as Element;
+
+    // If the tooltip itself was clicked, let its own listener handle it
+    if (deleteTooltip && (target === deleteTooltip || deleteTooltip.contains(target))) {
+      return;
+    }
+
+    const highlight = target.closest(".custom-highlight") as HTMLElement | null;
+    if (highlight) {
+      activeHighlightId = highlight.id;
+      const rect = highlight.getBoundingClientRect();
+      if (deleteTooltip) {
+        deleteTooltip.style.display = "block";
+        // Position above the span; fall back to below if near the top of viewport
+        const spaceAbove = rect.top;
+        const tooltipHeight = 30; // approximate
+        const top =
+          spaceAbove > tooltipHeight + 8
+            ? window.scrollY + rect.top - tooltipHeight - 6
+            : window.scrollY + rect.bottom + 6;
+        deleteTooltip.style.top = `${String(top)}px`;
+        deleteTooltip.style.left = `${String(window.scrollX + rect.left)}px`;
+      }
+      e.stopPropagation();
+    } else {
+      if (deleteTooltip) deleteTooltip.style.display = "none";
+      activeHighlightId = null;
+    }
+  });
+
+  deleteTooltip.addEventListener("click", () => {
+    if (!activeHighlightId) return;
+
+    const span = document.getElementById(activeHighlightId);
+    if (span?.parentNode) {
+      span.parentNode.replaceChild(
+        document.createTextNode(span.textContent ?? ""),
+        span,
+      );
+      document.body.normalize();
+    }
+
+    const pageKey = normalizeUrl(window.location.href);
+    enqueueRemoveHighlight(pageKey, activeHighlightId);
+
+    if (deleteTooltip) deleteTooltip.style.display = "none";
+    activeHighlightId = null;
+  });
+}
 
 chrome.runtime.onMessage.addListener(
   (
@@ -195,20 +485,20 @@ chrome.runtime.onMessage.addListener(
     if (request.action === "extensionStateChanged") {
       console.log("Received extension state change: ", request.enabled);
       enabled = request.enabled ?? false;
-      const pageKey = window.location.href;
+      const pageKey = normalizeUrl(window.location.href);
 
       if (enabled) {
-        // Show all highlights when extension is enabled
-        chrome.storage.local.get(
-          [pageKey],
-          (data: Record<string, HighlightData[]>) => {
-            const highlights = data[pageKey] ?? [];
-            console.log("Reapplying highlights:", highlights);
-            reapplyHighlightsFromStorage(highlights);
-          },
-        );
+        document.addEventListener("mouseup", handleMouseUp);
+        highlightsAppliedOnce = false;
+        applyHighlightsOnce();
       } else {
-        // Remove all highlights when extension is disabled
+        // Stop creating new highlights and hide the delete tooltip
+        document.removeEventListener("mouseup", handleMouseUp);
+        if (deleteTooltip) {
+          deleteTooltip.style.display = "none";
+          activeHighlightId = null;
+        }
+        // Remove all highlight spans from the DOM
         const highlights = document.querySelectorAll(".custom-highlight");
         highlights.forEach((el) => {
           const parent = el.parentNode;
@@ -219,8 +509,8 @@ chrome.runtime.onMessage.addListener(
             );
           }
         });
-        // Normalize the document to clean up text nodes
         document.body.normalize();
+        setHighlightCache(pageKey, []);
         console.log("Removed highlights from DOM");
       }
     } else if (request.action === "applyBlur") {
@@ -254,163 +544,269 @@ chrome.runtime.onMessage.addListener(
 );
 
 /**
- * Adds a highlight to the current selection
+ * Gap-fill: wraps each text node within a range individually.
+ * Used when the selection spans multiple inline elements (e.g. <a>, <sup>)
+ * and surroundContents / re-find cannot work on the full text.
+ * Returns storage entries for each wrapped segment.
+ */
+function gapFillRange(
+  range: Range,
+  color: string,
+  baseId: string,
+): HighlightData[] {
+  const ancestor = range.commonAncestorContainer;
+  const walkRoot =
+    ancestor.nodeType === Node.TEXT_NODE
+      ? ancestor.parentNode!
+      : ancestor;
+  const walker = document.createTreeWalker(walkRoot, NodeFilter.SHOW_TEXT);
+
+  const segments: { node: Text; start: number; end: number }[] = [];
+  let cur: Node | null;
+  while ((cur = walker.nextNode())) {
+    try {
+      if (!range.intersectsNode(cur)) continue;
+    } catch {
+      continue;
+    }
+    const tn = cur as Text;
+    const p = tn.parentNode;
+    if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
+    if (!tn.textContent || !tn.textContent.trim()) continue;
+
+    let sOff = 0;
+    let eOff = tn.length;
+    if (tn === range.startContainer) sOff = range.startOffset;
+    if (tn === range.endContainer) eOff = range.endOffset;
+    if (sOff >= eOff) continue;
+
+    const seg = tn.textContent.substring(sOff, eOff);
+    if (!seg.trim()) continue;
+    segments.push({ node: tn, start: sOff, end: eOff });
+  }
+
+  const entries: HighlightData[] = [];
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const { node: tn, start: sOff, end: eOff } = segments[i];
+    const seg = tn.textContent?.substring(sOff, eOff) ?? "";
+    const segId = `${baseId}-s${String(i)}`;
+    const { prefixContext: sp, suffixContext: ss } = captureContext(
+      tn,
+      sOff,
+      seg.length,
+    );
+
+    const segRange = document.createRange();
+    segRange.setStart(tn, sOff);
+    segRange.setEnd(tn, eOff);
+
+    const span = document.createElement("span");
+    span.className = "custom-highlight";
+    span.id = segId;
+    span.style.backgroundColor = color;
+
+    try {
+      segRange.surroundContents(span);
+      entries.push({
+        id: segId,
+        text: seg,
+        color,
+        pageIndex: 0,
+        prefixContext: sp,
+        suffixContext: ss,
+      });
+    } catch {
+      // Skip segments that can't be wrapped
+    }
+  }
+
+  return entries;
+}
+
+/**
+ * Adds a highlight to the current selection.
+ *
+ * Overlap strategy: new color wins entirely. Any existing highlight that
+ * intersects the selection is unwrapped first (DOM cleaned), then the new
+ * highlight is applied via surroundContents on a clean range.
+ *
+ * NEVER uses extractContents — that destroys page structure.
  */
 function addHighlight() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return;
 
-  const range = selection.getRangeAt(0);
+  let range = selection.getRangeAt(0);
   if (range.collapsed) return;
 
   const selectedText = range.toString().trim();
   if (!selectedText) return;
 
-  // Clean and limit the text length
   const cleanedText =
-    selectedText.length > 100 ? selectedText.substring(0, 100) : selectedText;
-
-  // Use the global highlightColor or get the next color in rotation
+    selectedText.length > 500 ? selectedText.substring(0, 500) : selectedText;
   const color = highlightColor || getNextHighlightColor();
 
-  // Find all occurrences of this text on the page
-  const allOccurrences = findAllTextOccurrences(cleanedText);
-  console.log(
-    `Found ${String(allOccurrences.length)} occurrences of "${cleanedText}" on the page`,
+  // Capture context before any DOM mutations
+  const { prefixContext, suffixContext } = captureContext(
+    range.startContainer as Text,
+    range.startOffset,
+    cleanedText.length,
   );
 
-  // The selection range gives us exact information about the current selection
-  const currentNode = range.startContainer;
-  const currentOffset = range.startOffset;
-
-  // Find which occurrence matches our current selection by comparing node and offset
-  let matchingIndex = -1;
-
-  console.log("Current selection node:", currentNode, "offset:", currentOffset);
-
-  // Match based on exact node and approximate offset
-  for (let i = 0; i < allOccurrences.length; i++) {
-    const occurrence = allOccurrences[i];
-
-    // Check if this is our exact node
-    if (occurrence.node === currentNode) {
-      // For single offset match, check if offset is within a small range of error
-      const offsetDiff = Math.abs(occurrence.startOffset - currentOffset);
-
-      console.log(
-        `Checking occurrence #${String(i)} - node match: true, offset: ${String(occurrence.startOffset)}, diff: ${String(offsetDiff)}`,
-      );
-
-      // If offset is exact or within a small error margin (sometimes selection offsets can be off by a character or two)
-      if (offsetDiff <= 5) {
-        matchingIndex = i;
-        console.log(
-          `Found exact match at occurrence #${String(matchingIndex)}`,
-        );
-        break;
-      }
-    }
-  }
-
-  // If we still don't have a match, try to find the occurrence that contains our selection
-  if (matchingIndex === -1) {
-    for (let i = 0; i < allOccurrences.length; i++) {
-      const occurrence = allOccurrences[i];
-
-      // Check if the node contains our selection's start node
-      if (occurrence.node.contains(currentNode)) {
-        console.log(`Occurrence #${String(i)} contains our selection node`);
-
-        // Calculate total offset to see if our selection falls within this occurrence
-        try {
-          const rangeToOccurrence = document.createRange();
-          rangeToOccurrence.setStart(occurrence.node, 0);
-          rangeToOccurrence.setEnd(currentNode, currentOffset);
-
-          // Check if the selection falls within the range of this occurrence
-          const offsetFromParent = rangeToOccurrence.toString().length;
-
-          if (
-            offsetFromParent >= occurrence.startOffset &&
-            offsetFromParent < occurrence.startOffset + occurrence.text.length
-          ) {
-            matchingIndex = i;
-            console.log(
-              `Found containing match at occurrence #${String(matchingIndex)} by offset calculation`,
-            );
-            break;
-          }
-        } catch (e) {
-          console.error("Error calculating offsets:", e);
-        }
-      }
-    }
-  }
-
-  // If still no match, use most visual approach - find the occurrence closest to the current viewport position
-  if (matchingIndex === -1) {
+  // Collect IDs of every existing highlight that intersects the selection
+  const touchedHighlightIds = new Set<string>();
+  document.querySelectorAll(".custom-highlight").forEach((span) => {
     try {
-      const selectionRect = range.getBoundingClientRect();
-      let closestDistance = Infinity;
-
-      for (let i = 0; i < allOccurrences.length; i++) {
-        const occurrence = allOccurrences[i];
-
-        // Create a temporary range for this occurrence to get its position
-        const occRange = document.createRange();
-        occRange.setStart(occurrence.node, occurrence.startOffset);
-        occRange.setEnd(
-          occurrence.node,
-          occurrence.startOffset + occurrence.text.length,
-        );
-
-        const occRect = occRange.getBoundingClientRect();
-
-        // Calculate distance between centers of the rectangles
-        const selectionCenterX = selectionRect.left + selectionRect.width / 2;
-        const selectionCenterY = selectionRect.top + selectionRect.height / 2;
-        const occCenterX = occRect.left + occRect.width / 2;
-        const occCenterY = occRect.top + occRect.height / 2;
-
-        const distance = Math.sqrt(
-          Math.pow(selectionCenterX - occCenterX, 2) +
-            Math.pow(selectionCenterY - occCenterY, 2),
-        );
-
-        console.log(
-          `Occurrence #${String(i)} visual distance: ${String(distance)}`,
-        );
-
-        if (distance < closestDistance) {
-          closestDistance = distance;
-          matchingIndex = i;
-        }
+      if (span.id && range.intersectsNode(span)) {
+        touchedHighlightIds.add(span.id);
       }
+    } catch {
+      /* non-intersectable */
+    }
+  });
 
-      console.log(
-        `Found closest visual match at occurrence #${String(matchingIndex)} with distance ${String(closestDistance)}`,
-      );
-    } catch (e) {
-      console.error("Error calculating visual distances:", e);
+  // Skip if fully inside a single existing highlight (e.g. double-click)
+  if (touchedHighlightIds.size === 1) {
+    const onlyId = [...touchedHighlightIds][0];
+    const parentSpan = document.getElementById(onlyId);
+    if (parentSpan && parentSpan.contains(range.startContainer) && parentSpan.contains(range.endContainer)) {
+      // #region agent log
+      agentDebugLog(DEBUG_RUN_ID, "H8", "content.ts:addHighlight", "skip — selection fully inside existing highlight", {
+        cleanedTextLength: cleanedText.length,
+        color,
+        touchedCount: touchedHighlightIds.size,
+      });
+      // #endregion
+      return;
     }
   }
 
-  // If all else fails, default to the first occurrence
-  if (matchingIndex === -1) {
-    console.warn(
-      "Could not determine occurrence index, defaulting to first occurrence",
-    );
-    matchingIndex = 0;
+  // --- Step 0.5: Classify each touched highlight as fully or partially covered ---
+  interface RemainderInfo {
+    text: string;
+    color: string;
+  }
+  const remainders: RemainderInfo[] = [];
+
+  for (const id of touchedHighlightIds) {
+    const span = document.getElementById(id);
+    if (!span) continue;
+
+    const spanText = span.textContent ?? "";
+    const spanRange = document.createRange();
+    spanRange.selectNodeContents(span);
+
+    const selStartsBeforeSpan =
+      range.compareBoundaryPoints(Range.START_TO_START, spanRange) <= 0;
+    const selEndsAfterSpan =
+      range.compareBoundaryPoints(Range.END_TO_END, spanRange) >= 0;
+
+    if (selStartsBeforeSpan && selEndsAfterSpan) {
+      continue;
+    }
+
+    const spanColor = span.style.backgroundColor || span.getAttribute("data-color") || "";
+
+    if (selStartsBeforeSpan && !selEndsAfterSpan) {
+      const overlapRange = document.createRange();
+      overlapRange.setStart(spanRange.startContainer, spanRange.startOffset);
+      overlapRange.setEnd(range.endContainer, range.endOffset);
+      const overlapLen = overlapRange.toString().length;
+      const rem = spanText.slice(overlapLen);
+      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+    } else if (!selStartsBeforeSpan && selEndsAfterSpan) {
+      const overlapRange = document.createRange();
+      overlapRange.setStart(range.startContainer, range.startOffset);
+      overlapRange.setEnd(spanRange.endContainer, spanRange.endOffset);
+      const overlapLen = overlapRange.toString().length;
+      const rem = spanText.slice(0, spanText.length - overlapLen);
+      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+    }
   }
 
-  console.log(
-    `Selected occurrence index: ${String(matchingIndex)} out of ${String(allOccurrences.length)} total`,
-  );
+  // #region agent log
+  agentDebugLog(DEBUG_RUN_ID, "H1", "content.ts:addHighlight", "start", {
+    cleanedTextLength: cleanedText.length,
+    color,
+    touchedCount: touchedHighlightIds.size,
+    remainderCount: remainders.length,
+  });
+  // #endregion
 
-  // Create a new unique ID for this highlight
+  // --- Step 1: Unwrap any touched highlights so surroundContents won't fail ---
+  let needsRelocate = false;
+  if (touchedHighlightIds.size > 0) {
+    for (const id of touchedHighlightIds) {
+      const span = document.getElementById(id);
+      if (span?.parentNode) {
+        const parent = span.parentNode;
+        while (span.firstChild) parent.insertBefore(span.firstChild, span);
+        parent.removeChild(span);
+      }
+    }
+    document.body.normalize();
+    needsRelocate = true;
+  }
+
+  // --- Step 2: If we unwrapped anything, re-find the text in the clean DOM ---
+  let usedGapFill = false;
   const highlightId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
 
-  // Highlight the range with the assigned color
+  if (needsRelocate) {
+    selection.removeAllRanges();
+    const normalizedText = cleanedText.trim().replace(/\s+/g, " ");
+    const occurrences = findAllTextOccurrences(normalizedText);
+
+    if (occurrences.length === 0) {
+      // Text spans multiple inline elements — use gap-fill approach
+      // #region agent log
+      agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "re-find failed, using gap-fill", {
+        cleanedTextLength: cleanedText.length,
+      });
+      // #endregion
+
+      const gapEntries = gapFillRange(range, color, highlightId);
+
+      if (gapEntries.length === 0) {
+        // #region agent log
+        agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "gap-fill produced 0 segments", {
+          cleanedTextLength: cleanedText.length,
+        });
+        // #endregion
+        return;
+      }
+
+      const pageKey = normalizeUrl(window.location.href);
+      const existing = getCachedHighlights(pageKey);
+      const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+      for (const entry of gapEntries) updated.push(entry);
+
+      // #region agent log
+      agentDebugLog(DEBUG_RUN_ID, "H5", "content.ts:addHighlight", "persist plan (gap-fill)", {
+        pageKey,
+        existingCount: existing.length,
+        touchedCount: touchedHighlightIds.size,
+        gapSegments: gapEntries.length,
+        finalCount: updated.length,
+      });
+      // #endregion
+
+      enqueuePersistHighlights(pageKey, updated, "normal");
+      return;
+    }
+
+    const bestIdx = resolveOccurrenceIndex(occurrences, {
+      id: "", text: cleanedText, color,
+      prefixContext, suffixContext,
+    });
+    const best = occurrences[bestIdx];
+
+    range = document.createRange();
+    range.setStart(best.node, best.startOffset);
+    range.setEnd(best.node, best.startOffset + best.text.length);
+  }
+
+  // --- Step 3: Apply highlight via surroundContents (safe, no extractContents) ---
   const highlightElement = document.createElement("span");
   highlightElement.className = "custom-highlight";
   highlightElement.id = highlightId;
@@ -418,37 +814,94 @@ function addHighlight() {
 
   try {
     range.surroundContents(highlightElement);
+  } catch {
+    // surroundContents failed — try gap-fill as last resort
+    // #region agent log
+    agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "surroundContents failed, trying gap-fill", {
+      cleanedTextLength: cleanedText.length,
+      highlightId,
+    });
+    // #endregion
 
-    // Store the highlight data with page index
-    const highlightData: HighlightData = {
-      id: highlightId,
-      text: cleanedText,
-      color: color,
-      pageIndex: matchingIndex,
-      totalInstances: allOccurrences.length,
-    };
+    const gapEntries = gapFillRange(range, color, highlightId);
+    if (gapEntries.length === 0) return;
 
-    // Save to storage using page URL as key
-    const pageKey = window.location.href;
-    chrome.storage.local.get(
-      [pageKey],
-      (result: Record<string, HighlightData[]>) => {
-        const highlights = result[pageKey] ?? [];
-        highlights.push(highlightData);
-
-        chrome.storage.local.set({ [pageKey]: highlights }, () => {
-          console.log(
-            "Highlight saved with ID:",
-            highlightId,
-            "data:",
-            highlightData,
-          );
-        });
-      },
-    );
-  } catch (e) {
-    console.error("Error applying highlight:", e);
+    const pageKey = normalizeUrl(window.location.href);
+    const existing = getCachedHighlights(pageKey);
+    const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+    for (const entry of gapEntries) updated.push(entry);
+    enqueuePersistHighlights(pageKey, updated, "normal");
+    return;
   }
+
+  // --- Step 3.5: Re-apply remainder portions of partially-covered highlights ---
+  const remainderEntries: HighlightData[] = [];
+  for (const rem of remainders) {
+    const normalizedRem = rem.text.trim().replace(/\s+/g, " ");
+    if (!normalizedRem) continue;
+
+    const remOccurrences = findAllTextOccurrences(normalizedRem);
+    if (remOccurrences.length === 0) continue;
+
+    const remOcc = remOccurrences[0];
+    const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
+    const { prefixContext: remPrefix, suffixContext: remSuffix } =
+      captureContext(remOcc.node, remOcc.startOffset, remOcc.text.length);
+
+    const remRange = document.createRange();
+    remRange.setStart(remOcc.node, remOcc.startOffset);
+    remRange.setEnd(remOcc.node, remOcc.startOffset + remOcc.text.length);
+
+    const remSpan = document.createElement("span");
+    remSpan.className = "custom-highlight";
+    remSpan.id = remId;
+    remSpan.style.backgroundColor = rem.color;
+
+    try {
+      remRange.surroundContents(remSpan);
+      remainderEntries.push({
+        id: remId,
+        text: normalizedRem,
+        color: rem.color,
+        pageIndex: 0,
+        prefixContext: remPrefix,
+        suffixContext: remSuffix,
+      });
+    } catch {
+      // Could not re-apply remainder — skip it
+    }
+  }
+
+  // --- Step 4: Persist — remove old touched, add new + remainders ---
+  const highlightData: HighlightData = {
+    id: highlightId,
+    text: cleanedText,
+    color,
+    pageIndex: 0,
+    prefixContext,
+    suffixContext,
+  };
+
+  const pageKey = normalizeUrl(window.location.href);
+  const existing = getCachedHighlights(pageKey);
+  const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+  updated.push(highlightData);
+  for (const rem of remainderEntries) {
+    updated.push(rem);
+  }
+
+  // #region agent log
+  agentDebugLog(DEBUG_RUN_ID, "H5", "content.ts:addHighlight", "persist plan", {
+    pageKey,
+    existingCount: existing.length,
+    touchedCount: touchedHighlightIds.size,
+    remaindersApplied: remainderEntries.length,
+    finalCount: updated.length,
+    highlightId,
+  });
+  // #endregion
+
+  enqueuePersistHighlights(pageKey, updated, "normal");
 }
 
 // Helper function to get the next color from the rotation
@@ -474,85 +927,6 @@ function getNextHighlightColor(): string {
   localStorage.setItem("currentColorIndex", currentColorIndex.toString());
 
   return color;
-}
-
-// Helper function to find all text occurrences on the page
-function findAllTextOccurrences(
-  text: string,
-): { node: Text; startOffset: number; text: string }[] {
-  const occurrences: { node: Text; startOffset: number; text: string }[] = [];
-  const textToFind = text.trim();
-
-  // If text is empty, return empty array
-  if (!textToFind) return occurrences;
-
-  // Determine if we need word boundaries based on content
-  // Only use word boundaries for single words without special characters
-  const useWordBoundaries =
-    !textToFind.includes(" ") && /^[\w-]+$/.test(textToFind);
-
-  // Create regex with or without word boundaries
-  const regex = useWordBoundaries
-    ? new RegExp(`\\b${escapeRegExp(textToFind)}\\b`, "g")
-    : new RegExp(escapeRegExp(textToFind), "g");
-
-  console.log(
-    `Using ${useWordBoundaries ? "word boundaries" : "no boundaries"} for search: "${textToFind}"`,
-  );
-
-  // Walk through all text nodes in the document
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode: (node: Node): number => {
-        // Skip style, script, and empty text nodes
-        const parentNode = node.parentNode;
-        if (
-          !parentNode ||
-          parentNode.nodeName === "STYLE" ||
-          parentNode.nodeName === "SCRIPT" ||
-          (parentNode instanceof Element &&
-            parentNode.classList.contains("custom-highlight")) ||
-          !node.textContent ||
-          node.textContent.trim() === ""
-        ) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        // Skip nodes that don't contain our text
-        if (!node.textContent.includes(textToFind)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    } as NodeFilter,
-  );
-
-  // Go through each text node and find all occurrences
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    if (node instanceof Text) {
-      const nodeText = node.textContent ?? "";
-
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(nodeText)) !== null) {
-        occurrences.push({
-          node: node,
-          startOffset: match.index,
-          text: match[0],
-        });
-      }
-    }
-  }
-
-  return occurrences;
-}
-
-// Helper function to escape special regex characters
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 //Helper function to remove all blurred elements

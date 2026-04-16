@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import { setBadgeText } from "./common";
+import { setBadgeText, exportHighlights, importHighlights } from "./common";
 
 console.log("Hello world from Hylytool!");
 
@@ -40,22 +40,9 @@ async function notifyTabs(enabled: boolean) {
 checkBox.addEventListener("change", (event) => {
   if (event.target instanceof HTMLInputElement) {
     const enabled = event.target.checked;
-    // Mark these promises as intentionally ignored
     void chrome.storage.sync.set({ enabled: enabled });
     setBadgeText(enabled);
     void notifyTabs(enabled);
-
-    // When extension is disabled, also disable highlight mode
-    if (!enabled) {
-      const highlightToggle = document.getElementById(
-        "highlight-mode",
-      ) as HTMLInputElement;
-      if (highlightToggle.checked) {
-        highlightToggle.checked = false;
-        void chrome.storage.local.set({ highlightMode: false });
-        console.log("Highlight mode disabled because extension was disabled");
-      }
-    }
   }
 });
 
@@ -72,6 +59,24 @@ input.addEventListener("change", (event) => {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Quota warning banner
+  const quotaWarning = document.getElementById("quota-warning") as HTMLDivElement;
+  const quotaDismiss = document.getElementById("quota-warning-dismiss") as HTMLButtonElement;
+
+  chrome.storage.local.get(
+    ["syncQuotaExceeded"],
+    (data: { syncQuotaExceeded?: boolean }) => {
+      if (data.syncQuotaExceeded) {
+        quotaWarning.style.display = "flex";
+      }
+    },
+  );
+
+  quotaDismiss.addEventListener("click", () => {
+    quotaWarning.style.display = "none";
+    void chrome.storage.local.remove("syncQuotaExceeded");
+  });
+
   //Blur control buttons
   const applyBlurButton = document.getElementById(
     "apply-blur",
@@ -82,9 +87,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const blurTextInput = document.getElementById("item") as HTMLInputElement;
 
   //Highlight control buttons
-  const highlightToggle = document.getElementById(
-    "highlight-mode",
-  ) as HTMLInputElement;
   const colorPicker = document.getElementById(
     "color-picker",
   ) as HTMLInputElement;
@@ -96,28 +98,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const extensionToggle = document.getElementById(
     "enabled",
   ) as HTMLInputElement;
-  const highlightLabel = document.querySelector(".checkbox-label");
   let colorPickerActive = false;
 
-  // Function to update highlight section based on extension status
+  // Disable / enable the color picker controls when the extension is toggled
   function updateHighlightSectionState(extensionEnabled: boolean) {
-    // Update the disabled state of the highlight toggle
-    highlightToggle.disabled = !extensionEnabled;
-
-    // Update the visual appearance
-    if (highlightLabel) {
-      if (extensionEnabled) {
-        highlightLabel.classList.remove("disabled");
-      } else {
-        highlightLabel.classList.add("disabled");
-      }
-    }
-
-    // Update color swatches
     const swatchesContainer = document.querySelector(".color-swatches");
     if (swatchesContainer) {
       swatchesContainer.classList.toggle("disabled", !extensionEnabled);
-
       colorSwatches.forEach((swatch) => {
         swatch.disabled = !extensionEnabled;
         swatch.style.pointerEvents = extensionEnabled ? "auto" : "none";
@@ -127,14 +114,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Listen for extension toggle changes
   extensionToggle.addEventListener("change", () => {
-    const extensionEnabled = extensionToggle.checked;
-    updateHighlightSectionState(extensionEnabled);
-
-    // If extension is disabled, also disable and uncheck highlight mode
-    if (!extensionEnabled && highlightToggle.checked) {
-      highlightToggle.checked = false;
-      void chrome.storage.local.set({ highlightMode: false });
-    }
+    updateHighlightSectionState(extensionToggle.checked);
   });
 
   // Function to update the selected color
@@ -201,20 +181,6 @@ document.addEventListener("DOMContentLoaded", () => {
     e.stopPropagation();
   });
 
-  // Single event listener for highlight toggle - only allow enabling if extension is enabled
-  highlightToggle.addEventListener("change", () => {
-    // If trying to enable highlight mode but extension is disabled, prevent it
-    if (highlightToggle.checked && !extensionToggle.checked) {
-      highlightToggle.checked = false;
-      alert(
-        "You must enable the extension first before enabling highlight mode.",
-      );
-      return;
-    }
-
-    void chrome.storage.local.set({ highlightMode: highlightToggle.checked });
-  });
-
   // Color picker event listener
   colorPicker.addEventListener("change", (e) => {
     const color = colorPicker.value;
@@ -237,19 +203,16 @@ document.addEventListener("DOMContentLoaded", () => {
   void (async () => {
     try {
       const [localData, syncData] = await Promise.all([
-        new Promise<{ highlightMode?: boolean; highlightColor?: string }>(
-          (resolve) => {
-            chrome.storage.local.get(
-              ["highlightMode", "highlightColor"],
-              (data: Record<string, unknown>) => {
-                resolve({
-                  highlightMode: !!data.highlightMode,
-                  highlightColor: data.highlightColor as string | undefined,
-                });
-              },
-            );
-          },
-        ),
+        new Promise<{ highlightColor?: string }>((resolve) => {
+          chrome.storage.local.get(
+            ["highlightColor"],
+            (data: Record<string, unknown>) => {
+              resolve({
+                highlightColor: data.highlightColor as string | undefined,
+              });
+            },
+          );
+        }),
         new Promise<{ enabled?: boolean }>((resolve) => {
           chrome.storage.sync.get(
             ["enabled"],
@@ -261,31 +224,70 @@ document.addEventListener("DOMContentLoaded", () => {
       ]);
 
       const extensionEnabled = syncData.enabled === true;
-
-      // Apply highlight mode only if extension is enabled
-      if (highlightToggle) {
-        const shouldEnableHighlight =
-          localData.highlightMode === true && extensionEnabled;
-        highlightToggle.checked = shouldEnableHighlight;
-
-        // If extension is disabled, ensure highlight mode is also disabled in storage
-        if (!extensionEnabled && localData.highlightMode === true) {
-          void chrome.storage.local.set({ highlightMode: false });
-        }
-      }
-
-      // Update the UI state based on extension status
       updateHighlightSectionState(extensionEnabled);
 
       const savedColor = localData.highlightColor ?? "#ffff00";
       colorPicker.value = savedColor;
-
-      // Set the initial selected swatch
       updateSelectedColor(savedColor);
     } catch (err) {
       console.error("Error initializing UI:", err);
     }
   })();
+
+  // Export highlights as a JSON file download
+  const exportButton = document.getElementById(
+    "export-highlights",
+  ) as HTMLButtonElement;
+  const importButton = document.getElementById(
+    "import-highlights",
+  ) as HTMLButtonElement;
+  const importFileInput = document.getElementById(
+    "import-file-input",
+  ) as HTMLInputElement;
+
+  exportButton.addEventListener("click", () => {
+    void (async () => {
+      try {
+        const json = await exportHighlights();
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `hylytool-highlights-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log("Highlights exported");
+      } catch (err) {
+        console.error("Export failed:", err);
+      }
+    })();
+  });
+
+  importButton.addEventListener("click", () => {
+    importFileInput.click();
+  });
+
+  importFileInput.addEventListener("change", () => {
+    const file = importFileInput.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      void (async () => {
+        try {
+          await importHighlights(reader.result as string);
+          console.log("Highlights imported successfully");
+          alert("Highlights imported! Reload the relevant pages to see them.");
+        } catch (err) {
+          console.error("Import failed:", err);
+          alert("Import failed — please check the file format.");
+        } finally {
+          importFileInput.value = "";
+        }
+      })();
+    };
+    reader.readAsText(file);
+  });
 
   //Apply blur without page reload
   applyBlurButton.addEventListener("click", () => {

@@ -18,6 +18,11 @@
         </div>
       </header>
 
+      <div id="quota-warning" class="quota-warning" style="display:none">
+        <span>Sync storage quota exceeded. New highlights on this device are saved locally only and won't sync across devices. Use Export/Import to transfer them manually.</span>
+        <button id="quota-warning-dismiss" class="quota-warning-dismiss">&#x00D7;</button>
+      </div>
+
       <main class="popup-content">
         <section class="blur-section">
           <h2>Text Blurring</h2>
@@ -40,12 +45,6 @@
 
         <section class="highlight-section">
           <h2>Text Highlighting</h2>
-          <div class="input-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="highlight-mode" />
-              <span>Enable Highlight Mode</span>
-            </label>
-          </div>
           <div class="input-group">
             <label for="color-picker">Highlight Color:</label>
             <input type="color" id="color-picker" value="#ffff00" />
@@ -77,6 +76,14 @@
               ></button>
               <button class="color-swatch custom-color-button">+</button>
             </div>
+          </div>
+          <div class="input-group">
+            <label>Backup &amp; Restore:</label>
+            <div class="button-group">
+              <button class="action-button" id="export-highlights">Export</button>
+              <button class="action-button" id="import-highlights">Import</button>
+            </div>
+            <input type="file" id="import-file-input" accept=".json" style="display:none" />
           </div>
         </section>
       </main>
