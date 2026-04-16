@@ -180,6 +180,19 @@ input[type="color"]:focus {
   border-color: #2196f3;
 }
 
+.hidden-color-picker {
+  position: fixed !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 /* Color swatches */
 .color-swatches {
   display: flex;
@@ -221,6 +234,11 @@ input[type="color"]:focus {
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
 }
 
+.color-swatches.disabled .color-swatch.selected {
+  border-color: #ddd;
+  box-shadow: none;
+}
+
 .custom-color-button {
   background-color: #f8f9fa;
   font-size: 20px;
@@ -230,6 +248,10 @@ input[type="color"]:focus {
 
 .custom-color-button:hover {
   background-color: #e9ecef;
+}
+
+.custom-color-button.custom-color-active {
+  color: transparent;
 }
 
 .input-with-buttons {
@@ -264,4 +286,40 @@ input[type="color"]:focus {
   display: flex;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Quota warning banner */
+.quota-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fff8e1;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 0.8rem;
+  color: #78350f;
+  line-height: 1.45;
+}
+
+.quota-warning span {
+  flex: 1;
+}
+
+.quota-warning-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: #78350f;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.6;
+  flex-shrink: 0;
+  margin-top: -1px;
+}
+
+.quota-warning-dismiss:hover {
+  opacity: 1;
 }

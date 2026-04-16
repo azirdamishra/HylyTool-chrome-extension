@@ -7,200 +7,415 @@ export interface HighlightData {
   id: string;
   text: string;
   color: string;
-  // Simple global page index
   pageIndex?: number;
   totalInstances?: number;
+  prefixContext?: string;
+  suffixContext?: string;
+}
+
+// ---------------------------------------------------------------------------
+// URL normalisation
+// ---------------------------------------------------------------------------
+
+const TRACKING_PARAMS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "utm_id",
+  "fbclid",
+  "gclid",
+  "msclkid",
+  "_ga",
+  "_gl",
+  "mc_eid",
+  "mc_cid",
+  "ref",
+  "referrer",
+]);
+
+/**
+ * Returns a canonical version of the URL with known tracking query params
+ * removed. Content-defining params (e.g. search queries, doc IDs) are kept.
+ */
+export function normalizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+        parsed.searchParams.delete(key);
+      }
+    }
+    const search = parsed.searchParams.toString()
+      ? `?${parsed.searchParams.toString()}`
+      : "";
+    return `${parsed.origin}${parsed.pathname}${search}${parsed.hash}`;
+  } catch {
+    return url;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context capture & scoring
+// ---------------------------------------------------------------------------
+
+const CONTEXT_SIZE = 30;
+
+/**
+ * Captures the text immediately before and after a highlight within its
+ * containing text node. Used to relocate the correct occurrence even after
+ * page structure changes.
+ */
+export function captureContext(
+  node: Text,
+  startOffset: number,
+  length: number,
+): { prefixContext: string; suffixContext: string } {
+  const t = node.textContent ?? "";
+  return {
+    prefixContext: t.slice(Math.max(0, startOffset - CONTEXT_SIZE), startOffset),
+    suffixContext: t.slice(
+      startOffset + length,
+      startOffset + length + CONTEXT_SIZE,
+    ),
+  };
 }
 
 /**
- * Reapplies a list of highlights by searching all text nodes using a TreeWalker.
- * @param highlights - Array of highlight data objects
- * @param container - DOM element to search within (defaults to document.body)
+ * Scores how well an occurrence matches the stored context.
+ * Range: 0 – 4, plus 0.5 tiebreaker for matching original pageIndex.
  */
+function scoreOccurrenceByContext(
+  occ: { node: Text; startOffset: number; text: string },
+  item: HighlightData,
+  occurrenceIndex: number,
+): number {
+  let score = 0;
+  const t = occ.node.textContent ?? "";
+  const actualPrefix = t.slice(
+    Math.max(0, occ.startOffset - CONTEXT_SIZE),
+    occ.startOffset,
+  );
+  const actualSuffix = t.slice(
+    occ.startOffset + occ.text.length,
+    occ.startOffset + occ.text.length + CONTEXT_SIZE,
+  );
 
+  if (item.prefixContext) {
+    if (actualPrefix === item.prefixContext) {
+      score += 2;
+    } else if (
+      actualPrefix.includes(item.prefixContext) ||
+      item.prefixContext.includes(actualPrefix)
+    ) {
+      score += 1;
+    }
+  }
+
+  if (item.suffixContext) {
+    if (actualSuffix === item.suffixContext) {
+      score += 2;
+    } else if (
+      actualSuffix.includes(item.suffixContext) ||
+      item.suffixContext.includes(actualSuffix)
+    ) {
+      score += 1;
+    }
+  }
+
+  // Small tiebreaker: prefer the occurrence at the original index
+  if (occurrenceIndex === item.pageIndex) {
+    score += 0.5;
+  }
+
+  return score;
+}
+
+// ---------------------------------------------------------------------------
+// Export / Import
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialises all URL-keyed highlight entries from chrome.storage.sync to a
+ * JSON string suitable for download.
+ */
+export async function exportHighlights(): Promise<string> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(null, (allData: Record<string, unknown>) => {
+      const highlights: Record<string, HighlightData[]> = {};
+      for (const [key, value] of Object.entries(allData)) {
+        // Only include entries whose key looks like a URL
+        if (key.startsWith("http") && Array.isArray(value)) {
+          highlights[key] = value as HighlightData[];
+        }
+      }
+      resolve(JSON.stringify(highlights, null, 2));
+    });
+  });
+}
+
+/**
+ * Parses an exported JSON string and writes each URL entry back to
+ * chrome.storage.sync, with a per-item quota fallback to local storage.
+ */
+export async function importHighlights(json: string): Promise<void> {
+  let parsed: Record<string, HighlightData[]>;
+  try {
+    parsed = JSON.parse(json) as Record<string, HighlightData[]>;
+  } catch (e) {
+    console.error("importHighlights: invalid JSON", e);
+    return;
+  }
+
+  for (const [pageKey, highlights] of Object.entries(parsed)) {
+    if (!pageKey.startsWith("http") || !Array.isArray(highlights)) continue;
+    await syncSet(pageKey, highlights);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Storage helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes highlights to chrome.storage.sync, falling back to local storage if
+ * the sync quota is exceeded.
+ */
+export async function syncSet(
+  pageKey: string,
+  highlights: HighlightData[],
+): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.set({ [pageKey]: highlights }, () => {
+      if (chrome.runtime.lastError) {
+        const msg = chrome.runtime.lastError.message ?? "";
+        if (
+          msg.includes("QUOTA_BYTES_PER_ITEM") ||
+          msg.includes("quota") ||
+          msg.includes("QuotaExceeded")
+        ) {
+          console.warn(
+            `Sync quota exceeded for "${pageKey}", falling back to local storage.`,
+          );
+          // Persist the flag so the popup can show a visible warning
+          chrome.storage.local.set(
+            { [pageKey]: highlights, syncQuotaExceeded: true },
+            () => {
+              resolve();
+            },
+          );
+        } else {
+          console.error("syncSet error:", chrome.runtime.lastError);
+          resolve();
+        }
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Reads highlights for a page key, checking sync first then local (covers the
+ * quota-fallback case where a page's data ended up in local).
+ */
+export async function syncGet(pageKey: string): Promise<HighlightData[]> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(
+      [pageKey],
+      (syncData: Record<string, HighlightData[]>) => {
+        if (syncData[pageKey]) {
+          resolve(syncData[pageKey]);
+          return;
+        }
+        // Not in sync — check local (quota-fallback path)
+        chrome.storage.local.get(
+          [pageKey],
+          (localData: Record<string, HighlightData[]>) => {
+            resolve(localData[pageKey] ?? []);
+          },
+        );
+      },
+    );
+  });
+}
+
+/**
+ * Removes a single highlight by ID from storage.
+ * Deletes the page key entirely when no highlights remain.
+ */
+export async function removeHighlightById(
+  id: string,
+  pageKey: string,
+): Promise<void> {
+  const highlights = await syncGet(pageKey);
+  const updated = highlights.filter((h) => h.id !== id);
+  if (updated.length === 0) {
+    chrome.storage.sync.remove(pageKey);
+    chrome.storage.local.remove(pageKey);
+  } else {
+    await syncSet(pageKey, updated);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Re-apply highlights
+// ---------------------------------------------------------------------------
+
+/**
+ * Reapplies a list of highlights using a two-pass approach:
+ *
+ * Pass 1 — resolve every target node while the DOM is still clean (no spans).
+ *           This prevents earlier highlights from blocking later searches, which
+ *           would happen when a sentence contains an already-highlighted word
+ *           (the TreeWalker skips text inside existing spans).
+ *
+ * Pass 2 — apply in descending text-length order so outer/longer highlights
+ *           are inserted first. Shorter inner highlights then target the same
+ *           pre-computed node reference (still valid after surroundContents
+ *           moves it inside the outer span) and wrap cleanly inside it.
+ */
 export function reapplyHighlightsFromStorage(
   highlights: HighlightData[],
   container: HTMLElement = document.body,
 ): void {
   console.log("Reapplying highlights:", highlights.length);
 
-  // First, clear any existing highlights
   removeAllHighlights(container);
 
-  // Process highlights one by one with a small delay between them
-  processNextHighlight(highlights, 0, container);
+  // Pass 1: resolve all targets on the clean DOM
+  const targets: Array<{
+    item: HighlightData;
+    occurrence: { node: Text; startOffset: number; text: string };
+  }> = [];
 
-  // Final cleanup
-  setTimeout(
-    () => {
-      cleanupHighlights(container);
-    },
-    highlights.length * 100 + 100,
-  );
-}
+  const skipped: string[] = [];
+  for (const item of highlights) {
+    try {
+      const normalizedText = item.text.trim().replace(/\s+/g, " ");
+      const allOccurrences = findAllTextOccurrences(normalizedText);
 
-/**
- * Process highlights one by one with a small delay
- */
-function processNextHighlight(
-  highlights: HighlightData[],
-  index: number,
-  container: HTMLElement,
-): void {
-  if (index >= highlights.length) return;
-
-  const item = highlights[index];
-
-  try {
-    const normalizedText = item.text.trim().replace(/\s+/g, " ");
-    console.log(
-      `Processing highlight: "${normalizedText}" (ID: ${String(item.id)})`,
-    );
-
-    // Find all occurrences of this text on the page
-    const allOccurrences: {
-      node: Text;
-      startOffset: number;
-      text: string;
-    }[] = findAllTextOccurrences(normalizedText);
-
-    console.log(
-      `Found ${String(allOccurrences.length)} occurrences of "${normalizedText}"`,
-    );
-
-    // Use the stored page index if available
-    if (
-      item.pageIndex !== undefined &&
-      item.pageIndex >= 0 &&
-      item.pageIndex < allOccurrences.length
-    ) {
-      const occurrence = allOccurrences[item.pageIndex];
-
-      // Double check with console log
-      console.log(
-        `Targeting specific occurrence #${String(item.pageIndex)} at node:`,
-        occurrence.node,
-        "offset:",
-        occurrence.startOffset,
-      );
-      console.log(`Occurrence text: "${occurrence.text.substring(0, 20)}..."`);
-      console.log(
-        `Occurrence parent: ${String(occurrence.node.parentNode?.nodeName)}`,
-      );
-      console.log(
-        `Occurrence siblings: ${String(occurrence.node.parentNode?.childNodes.length)}`,
-      );
-
-      // Add visual indicator to verify we're getting the right position
-      if (!normalizedText.includes(" ")) {
-        // For debugging - highlight each occurrence briefly in red before applying the actual highlight
-        for (let i = 0; i < allOccurrences.length; i++) {
-          const occ = allOccurrences[i];
-          try {
-            // Create a temporary range and style
-            const tempRange = document.createRange();
-            tempRange.setStart(occ.node, occ.startOffset);
-            tempRange.setEnd(occ.node, occ.startOffset + occ.text.length);
-
-            // Create a small indicator span to show the index
-            const indexSpan = document.createElement("span");
-            indexSpan.style.fontSize = "9px";
-            indexSpan.style.position = "absolute";
-            indexSpan.style.backgroundColor =
-              i === item.pageIndex ? "green" : "red";
-            indexSpan.style.color = "white";
-            indexSpan.style.padding = "2px";
-            indexSpan.style.zIndex = "9999";
-            indexSpan.textContent = `#${String(i)}`;
-            document.body.appendChild(indexSpan);
-
-            // Position it near the occurrence
-            const tempSpan = document.createElement("span");
-            const clonedContents = tempRange.cloneContents();
-            tempSpan.appendChild(clonedContents);
-            tempSpan.style.position = "absolute";
-            tempSpan.style.visibility = "hidden";
-            document.body.appendChild(tempSpan);
-            const rect = tempSpan.getBoundingClientRect();
-            document.body.removeChild(tempSpan);
-
-            indexSpan.style.top = `${String(window.scrollY + rect.top - 15)}px`;
-            indexSpan.style.left = `${String(window.scrollX + rect.left)}px`;
-
-            // Remove after a few seconds
-            setTimeout(() => {
-              if (indexSpan.parentNode) {
-                indexSpan.parentNode.removeChild(indexSpan);
-              }
-            }, 3000);
-          } catch (e) {
-            console.error("Error showing debug indicator:", e);
-          }
-        }
+      if (allOccurrences.length === 0) {
+        console.warn(`No occurrences found for "${normalizedText}", skipping`);
+        skipped.push(item.id);
+        continue;
       }
 
-      // Add a small delay to let the visual indicators appear first
-      setTimeout(() => {
-        const success = highlightTextNode(
-          occurrence.node,
-          occurrence.startOffset,
-          occurrence.text.length,
-          item.color,
-          item.id,
-        );
-
-        if (success) {
-          console.log(
-            `Successfully highlighted occurrence #${String(item.pageIndex)}`,
-          );
-        } else {
-          console.warn(
-            `Failed to highlight occurrence #${String(item.pageIndex)}, will try fallback`,
-          );
-          applyFallbackHighlight(allOccurrences, item);
-        }
-
-        // Process next highlight
-        setTimeout(() => {
-          processNextHighlight(highlights, index + 1, container);
-        }, 50);
-      }, 50);
-    } else {
-      applyFallbackHighlight(allOccurrences, item);
-
-      // Process next highlight
-      setTimeout(() => {
-        processNextHighlight(highlights, index + 1, container);
-      }, 50);
+      const targetIndex = resolveOccurrenceIndex(allOccurrences, item);
+      targets.push({ item, occurrence: allOccurrences[targetIndex] });
+    } catch (err) {
+      console.error(`Error resolving target for highlight:`, err);
+      skipped.push(item.id);
     }
-  } catch (err) {
-    console.error(`Error reapplying highlight:`, err);
-
-    // Even if error, process next highlight
-    setTimeout(() => {
-      processNextHighlight(highlights, index + 1, container);
-    }, 50);
   }
+
+  // Pass 2: apply longer highlights first so inner highlights nest correctly.
+  // Re-resolve each target right before applying because earlier applications
+  // may split text nodes, invalidating stored node references.
+  targets.sort((a, b) => b.item.text.length - a.item.text.length);
+
+  let applied = 0;
+  let failed = 0;
+  const failedIds: string[] = [];
+  for (const { item } of targets) {
+    try {
+      const normalizedText = item.text.trim().replace(/\s+/g, " ");
+      const freshOccurrences = findAllTextOccurrences(normalizedText);
+
+      if (freshOccurrences.length === 0) {
+        failed++;
+        failedIds.push(item.id);
+        continue;
+      }
+
+      const freshIdx = resolveOccurrenceIndex(freshOccurrences, item);
+      const occ = freshOccurrences[freshIdx];
+
+      const success = highlightTextNode(
+        occ.node,
+        occ.startOffset,
+        occ.text.length,
+        item.color,
+        item.id,
+      );
+
+      if (!success) {
+        console.warn(`Failed to highlight "${item.text}", skipping`);
+        failed++;
+        failedIds.push(item.id);
+      } else {
+        applied++;
+      }
+    } catch (err) {
+      console.error(`Error applying highlight for "${item.text}":`, err);
+      failed++;
+      failedIds.push(item.id);
+    }
+  }
+
+  // Merge any adjacent text nodes left by the DOM manipulations
+  container.normalize();
 }
 
 /**
- * Find all occurrences of text on the page
+ * Picks the best occurrence index for a stored highlight.
+ *
+ * If context was stored, scores every occurrence and selects the highest.
+ * Falls back to pageIndex, then to 0.
  */
-function findAllTextOccurrences(
+export function resolveOccurrenceIndex(
+  allOccurrences: { node: Text; startOffset: number; text: string }[],
+  item: HighlightData,
+): number {
+  const hasContext = item.prefixContext !== undefined || item.suffixContext !== undefined;
+
+  if (hasContext) {
+    let bestIndex = 0;
+    let bestScore = -1;
+
+    for (let i = 0; i < allOccurrences.length; i++) {
+      const score = scoreOccurrenceByContext(allOccurrences[i], item, i);
+      console.log(`Occurrence #${String(i)} context score: ${String(score)}`);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    console.log(
+      `Context scoring chose occurrence #${String(bestIndex)} (score: ${String(bestScore)})`,
+    );
+    return bestIndex;
+  }
+
+  // No context — use stored pageIndex with bounds check
+  if (
+    item.pageIndex !== undefined &&
+    item.pageIndex >= 0 &&
+    item.pageIndex < allOccurrences.length
+  ) {
+    return item.pageIndex;
+  }
+
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// DOM helpers
+// ---------------------------------------------------------------------------
+
+export function findAllTextOccurrences(
   text: string,
 ): { node: Text; startOffset: number; text: string }[] {
   const occurrences: { node: Text; startOffset: number; text: string }[] = [];
   const textToFind = text.trim();
 
-  // If text is empty, return empty array
   if (!textToFind) return occurrences;
 
-  // Determine if we need word boundaries based on content
-  // Only use word boundaries for single words without special characters
   const useWordBoundaries =
     !textToFind.includes(" ") && /^[\w-]+$/.test(textToFind);
 
-  // Create regex with or without word boundaries
   const regex = useWordBoundaries
     ? new RegExp(`\\b${escapeRegExp(textToFind)}\\b`, "g")
     : new RegExp(escapeRegExp(textToFind), "g");
@@ -209,42 +424,31 @@ function findAllTextOccurrences(
     `Using ${useWordBoundaries ? "word boundaries" : "no boundaries"} for search: "${textToFind}"`,
   );
 
-  // Walk through all text nodes in the document
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode: (node: Node): number => {
-        // Skip style, script, and empty text nodes
-        const parentNode = node.parentNode;
-        if (
-          !parentNode ||
-          parentNode.nodeName === "STYLE" ||
-          parentNode.nodeName === "SCRIPT" ||
-          (parentNode instanceof Element &&
-            parentNode.classList.contains("custom-highlight")) ||
-          !node.textContent ||
-          node.textContent.trim() === ""
-        ) {
-          return NodeFilter.FILTER_REJECT;
-        }
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node: Node): number => {
+      const parentNode = node.parentNode;
+      if (
+        !parentNode ||
+        parentNode.nodeName === "STYLE" ||
+        parentNode.nodeName === "SCRIPT" ||
+        !node.textContent ||
+        node.textContent.trim() === ""
+      ) {
+        return NodeFilter.FILTER_REJECT;
+      }
 
-        // Skip nodes that don't contain our text
-        if (!node.textContent.includes(textToFind)) {
-          return NodeFilter.FILTER_REJECT;
-        }
+      if (!node.textContent.includes(textToFind)) {
+        return NodeFilter.FILTER_REJECT;
+      }
 
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    } as NodeFilter,
-  );
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  } as NodeFilter);
 
-  // Go through each text node and find all occurrences
   let node: Node | null;
   while ((node = walker.nextNode())) {
     if (node instanceof Text) {
       const nodeText = node.textContent ?? "";
-
       let match: RegExpExecArray | null;
       while ((match = regex.exec(nodeText)) !== null) {
         occurrences.push({
@@ -259,14 +463,10 @@ function findAllTextOccurrences(
   return occurrences;
 }
 
-// Helper function to escape special regex characters
 function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Remove all highlights from the container
- */
 function removeAllHighlights(container: HTMLElement): void {
   const highlights = container.querySelectorAll(".custom-highlight");
   console.log(`Removing ${String(highlights.length)} existing highlights`);
@@ -278,37 +478,10 @@ function removeAllHighlights(container: HTMLElement): void {
     }
   });
 
-  // Normalize DOM to merge adjacent text nodes
   container.normalize();
 }
 
-/**
- * Clean up any nested highlights or invalid DOM structures
- */
-function cleanupHighlights(container: HTMLElement): void {
-  // Normalize DOM to merge adjacent text nodes
-  container.normalize();
 
-  // Find and fix any nested highlights
-  const highlights = container.querySelectorAll(".custom-highlight");
-  highlights.forEach((highlight) => {
-    const nestedHighlights = highlight.querySelectorAll(".custom-highlight");
-    if (nestedHighlights.length > 0) {
-      console.warn("Found nested highlights - fixing");
-      nestedHighlights.forEach((nested) => {
-        const text = nested.textContent ?? "";
-        if (nested.parentNode) {
-          nested.parentNode.replaceChild(document.createTextNode(text), nested);
-        }
-      });
-    }
-  });
-}
-
-/**
- * Highlights a given substring within a text node
- * @returns true if highlight applied, false if not applied
- */
 function highlightTextNode(
   node: Text,
   startIndex: number,
@@ -317,7 +490,6 @@ function highlightTextNode(
   id: string,
 ): boolean {
   try {
-    // Validate parameters
     if (node.nodeValue == null) return false;
     if (startIndex < 0 || startIndex + length > node.length) {
       console.error("Invalid range:", {
@@ -328,19 +500,16 @@ function highlightTextNode(
       return false;
     }
 
-    // Create range
     const range = document.createRange();
     range.setStart(node, startIndex);
     range.setEnd(node, startIndex + length);
 
-    // Create span
     const span = document.createElement("span");
     span.className = "custom-highlight";
     span.id = id;
     span.style.backgroundColor = color;
 
     try {
-      // Main approach: surroundContents
       range.surroundContents(span);
       return true;
     } catch (e) {
@@ -350,7 +519,6 @@ function highlightTextNode(
       );
 
       try {
-        // Alternative 1: extract and insert
         const fragment = range.extractContents();
         span.appendChild(fragment);
         range.insertNode(span);
@@ -376,12 +544,10 @@ export function applyHighlightToTextNode(
   return highlightTextNode(node, startIndex, length, color, id);
 }
 
-// Helper function to apply fallback highlight
 function applyFallbackHighlight(
   allOccurrences: { node: Text; startOffset: number; text: string }[],
   item: HighlightData,
 ): void {
-  // Fallback: use the first occurrence
   if (allOccurrences.length > 0) {
     const occurrence = allOccurrences[0];
     const success = highlightTextNode(

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import { setBadgeText } from "./common";
+import { setBadgeText, exportHighlights, importHighlights } from "./common";
 
 console.log("Hello world from Hylytool!");
 
@@ -40,22 +40,9 @@ async function notifyTabs(enabled: boolean) {
 checkBox.addEventListener("change", (event) => {
   if (event.target instanceof HTMLInputElement) {
     const enabled = event.target.checked;
-    // Mark these promises as intentionally ignored
     void chrome.storage.sync.set({ enabled: enabled });
     setBadgeText(enabled);
     void notifyTabs(enabled);
-
-    // When extension is disabled, also disable highlight mode
-    if (!enabled) {
-      const highlightToggle = document.getElementById(
-        "highlight-mode",
-      ) as HTMLInputElement;
-      if (highlightToggle.checked) {
-        highlightToggle.checked = false;
-        void chrome.storage.local.set({ highlightMode: false });
-        console.log("Highlight mode disabled because extension was disabled");
-      }
-    }
   }
 });
 
@@ -72,6 +59,24 @@ input.addEventListener("change", (event) => {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Quota warning banner
+  const quotaWarning = document.getElementById("quota-warning") as HTMLDivElement;
+  const quotaDismiss = document.getElementById("quota-warning-dismiss") as HTMLButtonElement;
+
+  chrome.storage.local.get(
+    ["syncQuotaExceeded"],
+    (data: { syncQuotaExceeded?: boolean }) => {
+      if (data.syncQuotaExceeded) {
+        quotaWarning.style.display = "flex";
+      }
+    },
+  );
+
+  quotaDismiss.addEventListener("click", () => {
+    quotaWarning.style.display = "none";
+    void chrome.storage.local.remove("syncQuotaExceeded");
+  });
+
   //Blur control buttons
   const applyBlurButton = document.getElementById(
     "apply-blur",
@@ -82,9 +87,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const blurTextInput = document.getElementById("item") as HTMLInputElement;
 
   //Highlight control buttons
-  const highlightToggle = document.getElementById(
-    "highlight-mode",
-  ) as HTMLInputElement;
   const colorPicker = document.getElementById(
     "color-picker",
   ) as HTMLInputElement;
@@ -96,45 +98,30 @@ document.addEventListener("DOMContentLoaded", () => {
   const extensionToggle = document.getElementById(
     "enabled",
   ) as HTMLInputElement;
-  const highlightLabel = document.querySelector(".checkbox-label");
-  let colorPickerActive = false;
+  const presetColorSwatches = Array.from(colorSwatches).filter(
+    (swatch) => !swatch.classList.contains("custom-color-button"),
+  );
 
-  // Function to update highlight section based on extension status
+  function normalizeColorValue(color: string): string {
+    return color.trim().toLowerCase();
+  }
+
+  // Disable / enable the color picker controls when the extension is toggled
   function updateHighlightSectionState(extensionEnabled: boolean) {
-    // Update the disabled state of the highlight toggle
-    highlightToggle.disabled = !extensionEnabled;
-
-    // Update the visual appearance
-    if (highlightLabel) {
-      if (extensionEnabled) {
-        highlightLabel.classList.remove("disabled");
-      } else {
-        highlightLabel.classList.add("disabled");
-      }
-    }
-
-    // Update color swatches
     const swatchesContainer = document.querySelector(".color-swatches");
     if (swatchesContainer) {
       swatchesContainer.classList.toggle("disabled", !extensionEnabled);
-
       colorSwatches.forEach((swatch) => {
         swatch.disabled = !extensionEnabled;
         swatch.style.pointerEvents = extensionEnabled ? "auto" : "none";
       });
+      colorPicker.disabled = !extensionEnabled;
     }
   }
 
   // Listen for extension toggle changes
   extensionToggle.addEventListener("change", () => {
-    const extensionEnabled = extensionToggle.checked;
-    updateHighlightSectionState(extensionEnabled);
-
-    // If extension is disabled, also disable and uncheck highlight mode
-    if (!extensionEnabled && highlightToggle.checked) {
-      highlightToggle.checked = false;
-      void chrome.storage.local.set({ highlightMode: false });
-    }
+    updateHighlightSectionState(extensionToggle.checked);
   });
 
   // Function to update the selected color
@@ -145,14 +132,25 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Add 'selected' class to the clicked swatch
-    const selectedSwatch = Array.from(colorSwatches).find(
+    const normalizedColor = normalizeColorValue(color);
+    const selectedSwatch = presetColorSwatches.find(
       (swatch) =>
-        swatch.dataset.color === color &&
-        !swatch.classList.contains("custom-color-button"),
+        normalizeColorValue(swatch.dataset.color ?? "") === normalizedColor,
     );
 
     if (selectedSwatch) {
       selectedSwatch.classList.add("selected");
+      customColorButton?.classList.remove("custom-color-active");
+      if (customColorButton) {
+        customColorButton.style.backgroundColor = "";
+        customColorButton.textContent = "+";
+        customColorButton.title = "Pick a custom color";
+      }
+    } else if (customColorButton) {
+      customColorButton.classList.add("selected", "custom-color-active");
+      customColorButton.style.backgroundColor = color;
+      customColorButton.textContent = "";
+      customColorButton.title = `Custom color: ${color}`;
     }
 
     // Update the color picker value
@@ -166,90 +164,37 @@ document.addEventListener("DOMContentLoaded", () => {
   colorSwatches.forEach((swatch) => {
     swatch.addEventListener("click", (e) => {
       if (swatch.classList.contains("custom-color-button")) {
-        // Show the color picker when the custom button is clicked
-        colorPicker.style.display = "block";
-        colorPickerActive = true;
-        // Use a small timeout to prevent immediate triggering of document click
-        setTimeout(() => {
-          colorPicker.click();
-        }, 50);
-        // Stop propagation to prevent document click from hiding the picker immediately
+        if (!extensionToggle.checked) return;
+        // Open native picker only when the + button is clicked.
+        colorPicker.click();
         e.stopPropagation();
       } else {
         const color = swatch.dataset.color ?? "#ffff00";
         updateSelectedColor(color);
-        colorPickerActive = false;
-        colorPicker.style.display = "none";
       }
     });
   });
 
-  // Hide color picker when clicking anywhere in the popup except the picker itself
-  document.addEventListener("click", (e) => {
-    if (
-      colorPickerActive &&
-      e.target !== colorPicker &&
-      e.target !== customColorButton
-    ) {
-      colorPicker.style.display = "none";
-      colorPickerActive = false;
-    }
-  });
-
-  // Prevent clicks on the color picker from bubbling up to document
-  colorPicker.addEventListener("click", (e) => {
-    e.stopPropagation();
-  });
-
-  // Single event listener for highlight toggle - only allow enabling if extension is enabled
-  highlightToggle.addEventListener("change", () => {
-    // If trying to enable highlight mode but extension is disabled, prevent it
-    if (highlightToggle.checked && !extensionToggle.checked) {
-      highlightToggle.checked = false;
-      alert(
-        "You must enable the extension first before enabling highlight mode.",
-      );
-      return;
-    }
-
-    void chrome.storage.local.set({ highlightMode: highlightToggle.checked });
-  });
-
   // Color picker event listener
-  colorPicker.addEventListener("change", (e) => {
+  colorPicker.addEventListener("change", () => {
     const color = colorPicker.value;
     updateSelectedColor(color);
-
-    // Don't immediately hide the color picker to allow for multiple adjustments
-    // It will be hidden when clicking outside
-    e.stopPropagation();
-  });
-
-  // Ensure color picker closes when ESC key is pressed
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && colorPickerActive) {
-      colorPicker.style.display = "none";
-      colorPickerActive = false;
-    }
   });
 
   // Initialize UI with the saved state
   void (async () => {
     try {
       const [localData, syncData] = await Promise.all([
-        new Promise<{ highlightMode?: boolean; highlightColor?: string }>(
-          (resolve) => {
-            chrome.storage.local.get(
-              ["highlightMode", "highlightColor"],
-              (data: Record<string, unknown>) => {
-                resolve({
-                  highlightMode: !!data.highlightMode,
-                  highlightColor: data.highlightColor as string | undefined,
-                });
-              },
-            );
-          },
-        ),
+        new Promise<{ highlightColor?: string }>((resolve) => {
+          chrome.storage.local.get(
+            ["highlightColor"],
+            (data: Record<string, unknown>) => {
+              resolve({
+                highlightColor: data.highlightColor as string | undefined,
+              });
+            },
+          );
+        }),
         new Promise<{ enabled?: boolean }>((resolve) => {
           chrome.storage.sync.get(
             ["enabled"],
@@ -261,31 +206,70 @@ document.addEventListener("DOMContentLoaded", () => {
       ]);
 
       const extensionEnabled = syncData.enabled === true;
-
-      // Apply highlight mode only if extension is enabled
-      if (highlightToggle) {
-        const shouldEnableHighlight =
-          localData.highlightMode === true && extensionEnabled;
-        highlightToggle.checked = shouldEnableHighlight;
-
-        // If extension is disabled, ensure highlight mode is also disabled in storage
-        if (!extensionEnabled && localData.highlightMode === true) {
-          void chrome.storage.local.set({ highlightMode: false });
-        }
-      }
-
-      // Update the UI state based on extension status
       updateHighlightSectionState(extensionEnabled);
 
       const savedColor = localData.highlightColor ?? "#ffff00";
       colorPicker.value = savedColor;
-
-      // Set the initial selected swatch
       updateSelectedColor(savedColor);
     } catch (err) {
       console.error("Error initializing UI:", err);
     }
   })();
+
+  // Export highlights as a JSON file download
+  const exportButton = document.getElementById(
+    "export-highlights",
+  ) as HTMLButtonElement;
+  const importButton = document.getElementById(
+    "import-highlights",
+  ) as HTMLButtonElement;
+  const importFileInput = document.getElementById(
+    "import-file-input",
+  ) as HTMLInputElement;
+
+  exportButton.addEventListener("click", () => {
+    void (async () => {
+      try {
+        const json = await exportHighlights();
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `hylytool-highlights-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log("Highlights exported");
+      } catch (err) {
+        console.error("Export failed:", err);
+      }
+    })();
+  });
+
+  importButton.addEventListener("click", () => {
+    importFileInput.click();
+  });
+
+  importFileInput.addEventListener("change", () => {
+    const file = importFileInput.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      void (async () => {
+        try {
+          await importHighlights(reader.result as string);
+          console.log("Highlights imported successfully");
+          alert("Highlights imported! Reload the relevant pages to see them.");
+        } catch (err) {
+          console.error("Import failed:", err);
+          alert("Import failed — please check the file format.");
+        } finally {
+          importFileInput.value = "";
+        }
+      })();
+    };
+    reader.readAsText(file);
+  });
 
   //Apply blur without page reload
   applyBlurButton.addEventListener("click", () => {
