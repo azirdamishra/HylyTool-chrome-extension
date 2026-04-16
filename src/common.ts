@@ -354,10 +354,6 @@ export function reapplyHighlightsFromStorage(
     }
   }
 
-  // #region agent log
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e78032'},body:JSON.stringify({sessionId:'e78032',runId:'post-fix',hypothesisId:'H9',location:'common.ts:reapplyHighlightsFromStorage',message:'reapply summary',data:{total:highlights.length,resolved:targets.length,skippedCount:skipped.length,skippedIds:skipped,applied,failed,failedIds},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-
   // Merge any adjacent text nodes left by the DOM manipulations
   container.normalize();
 }

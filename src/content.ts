@@ -10,33 +10,6 @@ import {
 } from "./common";
 import { HighlightData } from "./common";
 
-const DEBUG_RUN_ID = "pre-fix";
-
-function agentDebugLog(
-  runId: string,
-  hypothesisId: string,
-  location: string,
-  message: string,
-  data: Record<string, unknown>,
-): void {
-  void fetch("http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "e78032",
-    },
-    body: JSON.stringify({
-      sessionId: "e78032",
-      runId,
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-}
-
 const blurFilter = "blur(6px)";
 let textToBlur = "";
 
@@ -106,7 +79,6 @@ let initComplete = false;
 let cachedPageKey: string | null = null;
 let cachedHighlights: HighlightData[] = [];
 let highlightSaveQueue: Promise<void> = Promise.resolve();
-let highlightWriteSeq = 0;
 
 function setHighlightCache(pageKey: string, highlights: HighlightData[]): void {
   cachedPageKey = pageKey;
@@ -129,82 +101,19 @@ function removePageKeyFromStorage(pageKey: string): Promise<void> {
 function enqueuePersistHighlights(
   pageKey: string,
   highlights: HighlightData[],
-  source: "normal" | "fallback",
 ): void {
-  const writeSeq = ++highlightWriteSeq;
   const nextHighlights = [...highlights];
   setHighlightCache(pageKey, nextHighlights);
-  // #region agent log
-  agentDebugLog(
-    DEBUG_RUN_ID,
-    "H6",
-    "content.ts:enqueuePersistHighlights",
-    "queued highlight persistence",
-    {
-      pageKey,
-      source,
-      writeSeq,
-      count: nextHighlights.length,
-    },
-  );
-  // #endregion
   highlightSaveQueue = highlightSaveQueue
     .then(async () => {
       await syncSet(pageKey, nextHighlights);
-      // #region agent log
-      agentDebugLog(
-        DEBUG_RUN_ID,
-        "H6",
-        "content.ts:enqueuePersistHighlights",
-        "completed highlight persistence",
-        {
-          pageKey,
-          source,
-          writeSeq,
-          count: nextHighlights.length,
-        },
-      );
-      // #endregion
     })
-    .catch((error: unknown) => {
-      // #region agent log
-      agentDebugLog(
-        DEBUG_RUN_ID,
-        "H6",
-        "content.ts:enqueuePersistHighlights",
-        "persistence queue error",
-        {
-          pageKey,
-          source,
-          writeSeq,
-          error:
-            error instanceof Error
-              ? `${error.name}: ${error.message}`
-              : "unknown queue error",
-        },
-      );
-      // #endregion
-    });
+    .catch(() => {});
 }
 
 function enqueueRemoveHighlight(pageKey: string, highlightId: string): void {
   const updated = getCachedHighlights(pageKey).filter((h) => h.id !== highlightId);
-  const writeSeq = ++highlightWriteSeq;
   setHighlightCache(pageKey, updated);
-  // #region agent log
-  agentDebugLog(
-    DEBUG_RUN_ID,
-    "H6",
-    "content.ts:enqueueRemoveHighlight",
-    "queued highlight removal persistence",
-    {
-      pageKey,
-      highlightId,
-      writeSeq,
-      count: updated.length,
-    },
-  );
-  // #endregion
   highlightSaveQueue = highlightSaveQueue
     .then(async () => {
       if (updated.length === 0) {
@@ -212,40 +121,8 @@ function enqueueRemoveHighlight(pageKey: string, highlightId: string): void {
       } else {
         await syncSet(pageKey, updated);
       }
-      // #region agent log
-      agentDebugLog(
-        DEBUG_RUN_ID,
-        "H6",
-        "content.ts:enqueueRemoveHighlight",
-        "completed highlight removal persistence",
-        {
-          pageKey,
-          highlightId,
-          writeSeq,
-          count: updated.length,
-        },
-      );
-      // #endregion
     })
-    .catch((error: unknown) => {
-      // #region agent log
-      agentDebugLog(
-        DEBUG_RUN_ID,
-        "H6",
-        "content.ts:enqueueRemoveHighlight",
-        "removal queue error",
-        {
-          pageKey,
-          highlightId,
-          writeSeq,
-          error:
-            error instanceof Error
-              ? `${error.name}: ${error.message}`
-              : "unknown queue error",
-        },
-      );
-      // #endregion
-    });
+    .catch(() => {});
 }
 
 console.log("Content script initialized");
@@ -295,15 +172,6 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
       }
 
       initComplete = true;
-      // #region agent log
-      agentDebugLog(
-        DEBUG_RUN_ID,
-        "H7",
-        "content.ts:init",
-        "init complete",
-        { enabled, highlightColor, initComplete: true },
-      );
-      // #endregion
 
       if (enabled && document.readyState === "complete") {
         applyHighlightsOnce();
@@ -319,22 +187,6 @@ function handleMouseUp() {
 
   const selection = window.getSelection();
   if (selection?.toString()) {
-    // #region agent log
-    agentDebugLog(
-      DEBUG_RUN_ID,
-      "H4",
-      "content.ts:handleMouseUp",
-      "mouseup with non-empty selection",
-      {
-        selectionTextLength: selection.toString().length,
-        rangeCount: selection.rangeCount,
-        anchorParentIsHighlight:
-          selection.anchorNode?.parentElement?.classList.contains(
-            "custom-highlight",
-          ) ?? false,
-      },
-    );
-    // #endregion
     console.log("Selection made:", selection.toString());
     addHighlight();
   }
@@ -369,18 +221,6 @@ function applyHighlightsOnce(): void {
   console.log("Loading highlights for page:", pageKey);
   void syncGet(pageKey).then((highlights) => {
     setHighlightCache(pageKey, highlights);
-    // #region agent log
-    agentDebugLog(
-      DEBUG_RUN_ID,
-      "H6",
-      "content.ts:applyHighlightsOnce",
-      "loaded highlights into cache",
-      {
-        pageKey,
-        count: highlights.length,
-      },
-    );
-    // #endregion
     console.log("Found highlights:", highlights);
     reapplyHighlightsFromStorage(highlights);
   });
@@ -630,27 +470,13 @@ function gapFillRange(
 function applyRemainders(
   remainders: Array<{ text: string; color: string }>,
 ): HighlightData[] {
-  // #region agent log
-  agentDebugLog(DEBUG_RUN_ID, "H13", "content.ts:applyRemainders", "called", {
-    remainderCount: remainders.length,
-    remainders: remainders.map((r) => ({ textLen: r.text.length, color: r.color })),
-  });
-  // #endregion
   const entries: HighlightData[] = [];
   for (const rem of remainders) {
     const normalizedRem = rem.text.trim().replace(/\s+/g, " ");
     if (!normalizedRem) continue;
 
     const remOccurrences = findAllTextOccurrences(normalizedRem);
-    if (remOccurrences.length === 0) {
-      // #region agent log
-      agentDebugLog(DEBUG_RUN_ID, "H13", "content.ts:applyRemainders", "remainder not found in DOM", {
-        text: normalizedRem.substring(0, 50),
-        color: rem.color,
-      });
-      // #endregion
-      continue;
-    }
+    if (remOccurrences.length === 0) continue;
 
     const remOcc = remOccurrences[0];
     const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
@@ -732,13 +558,6 @@ function addHighlight() {
     if (parentSpan && parentSpan.contains(range.startContainer) && parentSpan.contains(range.endContainer)) {
       const existingColor = parentSpan.style.backgroundColor || "";
       if (existingColor === color) {
-        // #region agent log
-        agentDebugLog(DEBUG_RUN_ID, "H8", "content.ts:addHighlight", "skip — same-color selection fully inside existing highlight", {
-          cleanedTextLength: cleanedText.length,
-          color,
-          touchedCount: touchedHighlightIds.size,
-        });
-        // #endregion
         return;
       }
     }
@@ -799,15 +618,6 @@ function addHighlight() {
     }
   }
 
-  // #region agent log
-  agentDebugLog(DEBUG_RUN_ID, "H1", "content.ts:addHighlight", "start", {
-    cleanedTextLength: cleanedText.length,
-    color,
-    touchedCount: touchedHighlightIds.size,
-    remainderCount: remainders.length,
-  });
-  // #endregion
-
   // --- Step 1: Unwrap any touched highlights so surroundContents won't fail ---
   let needsRelocate = false;
   if (touchedHighlightIds.size > 0) {
@@ -834,21 +644,10 @@ function addHighlight() {
 
     if (occurrences.length === 0) {
       // Text spans multiple inline elements — use gap-fill approach
-      // #region agent log
-      agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "re-find failed, using gap-fill", {
-        cleanedTextLength: cleanedText.length,
-      });
-      // #endregion
-
       const gapEntries = gapFillRange(range, color, highlightId);
       const remEntries = applyRemainders(remainders);
 
       if (gapEntries.length === 0 && remEntries.length === 0) {
-        // #region agent log
-        agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "gap-fill produced 0 segments", {
-          cleanedTextLength: cleanedText.length,
-        });
-        // #endregion
         return;
       }
 
@@ -858,18 +657,7 @@ function addHighlight() {
       for (const entry of gapEntries) updated.push(entry);
       for (const entry of remEntries) updated.push(entry);
 
-      // #region agent log
-      agentDebugLog(DEBUG_RUN_ID, "H5", "content.ts:addHighlight", "persist plan (gap-fill)", {
-        pageKey,
-        existingCount: existing.length,
-        touchedCount: touchedHighlightIds.size,
-        gapSegments: gapEntries.length,
-        remaindersApplied: remEntries.length,
-        finalCount: updated.length,
-      });
-      // #endregion
-
-      enqueuePersistHighlights(pageKey, updated, "normal");
+      enqueuePersistHighlights(pageKey, updated);
       return;
     }
 
@@ -894,13 +682,6 @@ function addHighlight() {
     range.surroundContents(highlightElement);
   } catch {
     // surroundContents failed — try gap-fill as last resort
-    // #region agent log
-    agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "surroundContents failed, trying gap-fill", {
-      cleanedTextLength: cleanedText.length,
-      highlightId,
-    });
-    // #endregion
-
     const gapEntries = gapFillRange(range, color, highlightId);
     const remEntries2 = applyRemainders(remainders);
     if (gapEntries.length === 0 && remEntries2.length === 0) return;
@@ -910,7 +691,7 @@ function addHighlight() {
     const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
     for (const entry of gapEntries) updated.push(entry);
     for (const entry of remEntries2) updated.push(entry);
-    enqueuePersistHighlights(pageKey, updated, "normal");
+    enqueuePersistHighlights(pageKey, updated);
     return;
   }
 
@@ -935,18 +716,7 @@ function addHighlight() {
     updated.push(rem);
   }
 
-  // #region agent log
-  agentDebugLog(DEBUG_RUN_ID, "H5", "content.ts:addHighlight", "persist plan", {
-    pageKey,
-    existingCount: existing.length,
-    touchedCount: touchedHighlightIds.size,
-    remaindersApplied: remainderEntries.length,
-    finalCount: updated.length,
-    highlightId,
-  });
-  // #endregion
-
-  enqueuePersistHighlights(pageKey, updated, "normal");
+  enqueuePersistHighlights(pageKey, updated);
 }
 
 // Helper function to get the next color from the rotation
