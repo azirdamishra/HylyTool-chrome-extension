@@ -310,18 +310,32 @@ export function reapplyHighlightsFromStorage(
     }
   }
 
-  // Pass 2: apply longer highlights first so inner highlights nest correctly
+  // Pass 2: apply longer highlights first so inner highlights nest correctly.
+  // Re-resolve each target right before applying because earlier applications
+  // may split text nodes, invalidating stored node references.
   targets.sort((a, b) => b.item.text.length - a.item.text.length);
 
   let applied = 0;
   let failed = 0;
   const failedIds: string[] = [];
-  for (const { item, occurrence } of targets) {
+  for (const { item } of targets) {
     try {
+      const normalizedText = item.text.trim().replace(/\s+/g, " ");
+      const freshOccurrences = findAllTextOccurrences(normalizedText);
+
+      if (freshOccurrences.length === 0) {
+        failed++;
+        failedIds.push(item.id);
+        continue;
+      }
+
+      const freshIdx = resolveOccurrenceIndex(freshOccurrences, item);
+      const occ = freshOccurrences[freshIdx];
+
       const success = highlightTextNode(
-        occurrence.node,
-        occurrence.startOffset,
-        occurrence.text.length,
+        occ.node,
+        occ.startOffset,
+        occ.text.length,
         item.color,
         item.id,
       );
@@ -421,8 +435,6 @@ export function findAllTextOccurrences(
         !parentNode ||
         parentNode.nodeName === "STYLE" ||
         parentNode.nodeName === "SCRIPT" ||
-        (parentNode instanceof Element &&
-          parentNode.classList.contains("custom-highlight")) ||
         !node.textContent ||
         node.textContent.trim() === ""
       ) {

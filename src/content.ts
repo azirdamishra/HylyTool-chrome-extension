@@ -624,6 +624,66 @@ function gapFillRange(
 }
 
 /**
+ * Re-applies remainder portions of partially-covered highlights.
+ * Returns storage entries for each successfully re-applied remainder.
+ */
+function applyRemainders(
+  remainders: Array<{ text: string; color: string }>,
+): HighlightData[] {
+  // #region agent log
+  agentDebugLog(DEBUG_RUN_ID, "H13", "content.ts:applyRemainders", "called", {
+    remainderCount: remainders.length,
+    remainders: remainders.map((r) => ({ textLen: r.text.length, color: r.color })),
+  });
+  // #endregion
+  const entries: HighlightData[] = [];
+  for (const rem of remainders) {
+    const normalizedRem = rem.text.trim().replace(/\s+/g, " ");
+    if (!normalizedRem) continue;
+
+    const remOccurrences = findAllTextOccurrences(normalizedRem);
+    if (remOccurrences.length === 0) {
+      // #region agent log
+      agentDebugLog(DEBUG_RUN_ID, "H13", "content.ts:applyRemainders", "remainder not found in DOM", {
+        text: normalizedRem.substring(0, 50),
+        color: rem.color,
+      });
+      // #endregion
+      continue;
+    }
+
+    const remOcc = remOccurrences[0];
+    const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
+    const { prefixContext: remPrefix, suffixContext: remSuffix } =
+      captureContext(remOcc.node, remOcc.startOffset, remOcc.text.length);
+
+    const remRange = document.createRange();
+    remRange.setStart(remOcc.node, remOcc.startOffset);
+    remRange.setEnd(remOcc.node, remOcc.startOffset + remOcc.text.length);
+
+    const remSpan = document.createElement("span");
+    remSpan.className = "custom-highlight";
+    remSpan.id = remId;
+    remSpan.style.backgroundColor = rem.color;
+
+    try {
+      remRange.surroundContents(remSpan);
+      entries.push({
+        id: remId,
+        text: normalizedRem,
+        color: rem.color,
+        pageIndex: 0,
+        prefixContext: remPrefix,
+        suffixContext: remSuffix,
+      });
+    } catch {
+      // Could not re-apply remainder
+    }
+  }
+  return entries;
+}
+
+/**
  * Adds a highlight to the current selection.
  *
  * Overlap strategy: new color wins entirely. Any existing highlight that
@@ -665,19 +725,22 @@ function addHighlight() {
     }
   });
 
-  // Skip if fully inside a single existing highlight (e.g. double-click)
+  // Skip if fully inside a single existing highlight OF THE SAME COLOR
   if (touchedHighlightIds.size === 1) {
     const onlyId = [...touchedHighlightIds][0];
     const parentSpan = document.getElementById(onlyId);
     if (parentSpan && parentSpan.contains(range.startContainer) && parentSpan.contains(range.endContainer)) {
-      // #region agent log
-      agentDebugLog(DEBUG_RUN_ID, "H8", "content.ts:addHighlight", "skip — selection fully inside existing highlight", {
-        cleanedTextLength: cleanedText.length,
-        color,
-        touchedCount: touchedHighlightIds.size,
-      });
-      // #endregion
-      return;
+      const existingColor = parentSpan.style.backgroundColor || "";
+      if (existingColor === color) {
+        // #region agent log
+        agentDebugLog(DEBUG_RUN_ID, "H8", "content.ts:addHighlight", "skip — same-color selection fully inside existing highlight", {
+          cleanedTextLength: cleanedText.length,
+          color,
+          touchedCount: touchedHighlightIds.size,
+        });
+        // #endregion
+        return;
+      }
     }
   }
 
@@ -721,6 +784,18 @@ function addHighlight() {
       const overlapLen = overlapRange.toString().length;
       const rem = spanText.slice(0, spanText.length - overlapLen);
       if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+    } else if (!selStartsBeforeSpan && !selEndsAfterSpan) {
+      const prefixRange = document.createRange();
+      prefixRange.setStart(spanRange.startContainer, spanRange.startOffset);
+      prefixRange.setEnd(range.startContainer, range.startOffset);
+      const prefixText = prefixRange.toString();
+      if (prefixText.trim()) remainders.push({ text: prefixText, color: spanColor });
+
+      const suffixRange = document.createRange();
+      suffixRange.setStart(range.endContainer, range.endOffset);
+      suffixRange.setEnd(spanRange.endContainer, spanRange.endOffset);
+      const suffixText = suffixRange.toString();
+      if (suffixText.trim()) remainders.push({ text: suffixText, color: spanColor });
     }
   }
 
@@ -766,8 +841,9 @@ function addHighlight() {
       // #endregion
 
       const gapEntries = gapFillRange(range, color, highlightId);
+      const remEntries = applyRemainders(remainders);
 
-      if (gapEntries.length === 0) {
+      if (gapEntries.length === 0 && remEntries.length === 0) {
         // #region agent log
         agentDebugLog(DEBUG_RUN_ID, "H12", "content.ts:addHighlight", "gap-fill produced 0 segments", {
           cleanedTextLength: cleanedText.length,
@@ -780,6 +856,7 @@ function addHighlight() {
       const existing = getCachedHighlights(pageKey);
       const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
       for (const entry of gapEntries) updated.push(entry);
+      for (const entry of remEntries) updated.push(entry);
 
       // #region agent log
       agentDebugLog(DEBUG_RUN_ID, "H5", "content.ts:addHighlight", "persist plan (gap-fill)", {
@@ -787,6 +864,7 @@ function addHighlight() {
         existingCount: existing.length,
         touchedCount: touchedHighlightIds.size,
         gapSegments: gapEntries.length,
+        remaindersApplied: remEntries.length,
         finalCount: updated.length,
       });
       // #endregion
@@ -824,53 +902,20 @@ function addHighlight() {
     // #endregion
 
     const gapEntries = gapFillRange(range, color, highlightId);
-    if (gapEntries.length === 0) return;
+    const remEntries2 = applyRemainders(remainders);
+    if (gapEntries.length === 0 && remEntries2.length === 0) return;
 
     const pageKey = normalizeUrl(window.location.href);
     const existing = getCachedHighlights(pageKey);
     const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
     for (const entry of gapEntries) updated.push(entry);
+    for (const entry of remEntries2) updated.push(entry);
     enqueuePersistHighlights(pageKey, updated, "normal");
     return;
   }
 
   // --- Step 3.5: Re-apply remainder portions of partially-covered highlights ---
-  const remainderEntries: HighlightData[] = [];
-  for (const rem of remainders) {
-    const normalizedRem = rem.text.trim().replace(/\s+/g, " ");
-    if (!normalizedRem) continue;
-
-    const remOccurrences = findAllTextOccurrences(normalizedRem);
-    if (remOccurrences.length === 0) continue;
-
-    const remOcc = remOccurrences[0];
-    const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
-    const { prefixContext: remPrefix, suffixContext: remSuffix } =
-      captureContext(remOcc.node, remOcc.startOffset, remOcc.text.length);
-
-    const remRange = document.createRange();
-    remRange.setStart(remOcc.node, remOcc.startOffset);
-    remRange.setEnd(remOcc.node, remOcc.startOffset + remOcc.text.length);
-
-    const remSpan = document.createElement("span");
-    remSpan.className = "custom-highlight";
-    remSpan.id = remId;
-    remSpan.style.backgroundColor = rem.color;
-
-    try {
-      remRange.surroundContents(remSpan);
-      remainderEntries.push({
-        id: remId,
-        text: normalizedRem,
-        color: rem.color,
-        pageIndex: 0,
-        prefixContext: remPrefix,
-        suffixContext: remSuffix,
-      });
-    } catch {
-      // Could not re-apply remainder — skip it
-    }
-  }
+  const remainderEntries = applyRemainders(remainders);
 
   // --- Step 4: Persist — remove old touched, add new + remainders ---
   const highlightData: HighlightData = {
