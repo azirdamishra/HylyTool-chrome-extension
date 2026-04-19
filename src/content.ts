@@ -3,15 +3,8 @@ import {
   reapplyHighlightsFromStorage,
   normalizeUrl,
   captureContext,
-  syncGet,
-  syncSet,
-  findAllTextOccurrences,
-  resolveOccurrenceIndex,
-} from "./common";
-import {
-  reapplyHighlightsFromStorage,
-  normalizeUrl,
-  captureContext,
+  captureContextAcross,
+  applyGapFillToRange,
   syncGet,
   syncSet,
   findAllTextOccurrences,
@@ -180,6 +173,10 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
         document.addEventListener("mouseup", handleMouseUp);
       }
 
+      // #region agent log
+      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'A',location:'content.ts:175',message:'init complete',data:{enabled,highlightColor,attachedMouseup:enabled,url:window.location.href},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+
       initComplete = true;
 
       if (enabled && document.readyState === "complete") {
@@ -191,6 +188,10 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
 
 // Handle mouseup event for highlighting
 function handleMouseUp() {
+  // #region agent log
+  const _sel = window.getSelection();
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'A',location:'content.ts:184',message:'handleMouseUp fired',data:{enabled,runtimeId:!!chrome.runtime?.id,selLen:_sel?.toString().length ?? 0,selPreview:(_sel?.toString() ?? '').slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   if (!enabled) return;
   if (!chrome.runtime?.id) return;
 
@@ -209,6 +210,9 @@ chrome.storage.onChanged.addListener(
   ) => {
     if (namespace === "local") {
       const colorChange = changes.highlightColor;
+      // #region agent log
+      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'D',location:'content.ts:202',message:'storage.onChanged local',data:{keys:Object.keys(changes),colorChange:colorChange?{old:colorChange.oldValue,new:colorChange.newValue}:null,currentHighlightColor:highlightColor},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (typeof colorChange !== "undefined") {
         const newValue: unknown = colorChange.newValue;
         if (typeof newValue === "string") {
@@ -220,11 +224,6 @@ chrome.storage.onChanged.addListener(
   },
 );
 
-let highlightsAppliedOnce = false;
-
-function applyHighlightsOnce(): void {
-  if (highlightsAppliedOnce || !enabled) return;
-  highlightsAppliedOnce = true;
 let highlightsAppliedOnce = false;
 
 function applyHighlightsOnce(): void {
@@ -373,6 +372,28 @@ function removeActiveHighlight() {
   if (!activeHighlightId) return;
 
   const span = document.getElementById(activeHighlightId);
+  // If the right-clicked span is part of a compound (data-group), nuke the
+  // entire group from the DOM AND remove the single compound storage entry.
+  // This is what fixes "deleting half-page highlight requires sentence-by-
+  // sentence" — one click removes the whole drag-select.
+  const groupId = span?.getAttribute("data-group") ?? null;
+  if (groupId) {
+    const groupSpans = document.querySelectorAll(
+      `.custom-highlight[data-group="${groupId}"]`,
+    );
+    groupSpans.forEach((el) => {
+      const parent = el.parentNode;
+      if (parent) {
+        parent.replaceChild(document.createTextNode(el.textContent ?? ""), el);
+      }
+    });
+    document.body.normalize();
+    const pageKey = normalizeUrl(window.location.href);
+    enqueueRemoveHighlight(pageKey, groupId);
+    hideDeleteMenu();
+    return;
+  }
+
   if (span?.parentNode) {
     span.parentNode.replaceChild(
       document.createTextNode(span.textContent ?? ""),
@@ -461,81 +482,86 @@ function gapFillRange(
   color: string,
   baseId: string,
 ): HighlightData[] {
-  const ancestor = range.commonAncestorContainer;
-  const walkRoot =
-    ancestor.nodeType === Node.TEXT_NODE
-      ? ancestor.parentNode!
-      : ancestor;
-  const walker = document.createTreeWalker(walkRoot, NodeFilter.SHOW_TEXT);
+  // Capture the FULL exact text of the selection — character-perfect,
+  // including spacing and punctuation. This is what we'll search for on
+  // reload using a document-wide concatenated-text buffer.
+  const fullText = range.toString();
+  if (!fullText) return [];
 
-  const segments: { node: Text; start: number; end: number }[] = [];
-  let cur: Node | null;
-  while ((cur = walker.nextNode())) {
-    try {
-      if (!range.intersectsNode(cur)) continue;
-    } catch {
-      continue;
-    }
-    const tn = cur as Text;
-    const p = tn.parentNode;
-    if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
-    if (!tn.textContent || !tn.textContent.trim()) continue;
+  // Snapshot endpoints BEFORE any DOM mutation so we can capture
+  // prefix/suffix context that spans element boundaries.
+  const startNode = range.startContainer;
+  const startOff = range.startOffset;
+  const endNode = range.endContainer;
+  const endOff = range.endOffset;
 
-    let sOff = 0;
-    let eOff = tn.length;
-    if (tn === range.startContainer) sOff = range.startOffset;
-    if (tn === range.endContainer) eOff = range.endOffset;
-    if (sOff >= eOff) continue;
-
-    const seg = tn.textContent.substring(sOff, eOff);
-    if (!seg.trim()) continue;
-    segments.push({ node: tn, start: sOff, end: eOff });
-  }
-
-  const entries: HighlightData[] = [];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const { node: tn, start: sOff, end: eOff } = segments[i];
-    const seg = tn.textContent?.substring(sOff, eOff) ?? "";
-    const segId = `${baseId}-s${String(i)}`;
-    const { prefixContext: sp, suffixContext: ss } = captureContext(
-      tn,
-      sOff,
-      seg.length,
+  // captureContextAcross wants a Text node. Walk to the first Text at/after
+  // the boundary for start, and last Text at/before the boundary for end.
+  const firstTextInside = (() => {
+    if (startNode.nodeType === Node.TEXT_NODE)
+      return { node: startNode as Text, off: startOff };
+    // startNode is an element; text at offset `startOff` is child at that index
+    const child = startNode.childNodes[startOff];
+    if (child && child.nodeType === Node.TEXT_NODE)
+      return { node: child as Text, off: 0 };
+    const walker = document.createTreeWalker(
+      startNode,
+      NodeFilter.SHOW_TEXT,
     );
+    const first = walker.nextNode() as Text | null;
+    return first ? { node: first, off: 0 } : null;
+  })();
+  const lastTextInside = (() => {
+    if (endNode.nodeType === Node.TEXT_NODE)
+      return { node: endNode as Text, off: endOff };
+    const prior = endNode.childNodes[endOff - 1];
+    if (prior && prior.nodeType === Node.TEXT_NODE)
+      return { node: prior as Text, off: (prior as Text).length };
+    return null;
+  })();
 
-    const segRange = document.createRange();
-    segRange.setStart(tn, sOff);
-    segRange.setEnd(tn, eOff);
+  const startCtx = firstTextInside
+    ? captureContextAcross(firstTextInside.node, firstTextInside.off, 0)
+    : { prefixContext: "", suffixContext: "" };
+  const endCtx = lastTextInside
+    ? captureContextAcross(lastTextInside.node, lastTextInside.off, 0)
+    : { prefixContext: "", suffixContext: "" };
 
-    const span = document.createElement("span");
-    span.className = "custom-highlight";
-    span.id = segId;
-    span.style.backgroundColor = color;
+  // Wrap every text node in the range and tag them all with data-group=baseId.
+  const wrappedIds = applyGapFillToRange(range, color, baseId);
 
-    try {
-      segRange.surroundContents(span);
-      entries.push({
-        id: segId,
-        text: seg,
-        color,
-        pageIndex: 0,
-        prefixContext: sp,
-        suffixContext: ss,
-      });
-    } catch {
-      // Skip segments that can't be wrapped
-    }
-  }
+  // #region agent log
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'K',location:'content.ts:gapFillRange',message:'compound stored',data:{wrappedCount:wrappedIds.length,textLen:fullText.length,textPreview:fullText.slice(0,60),prefixPreview:startCtx.prefixContext.slice(-20),suffixPreview:endCtx.suffixContext.slice(0,20)},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
-  return entries;
+  if (wrappedIds.length === 0) return [];
+
+  // ONE compound entry per drag-select regardless of segment count.
+  const compound: HighlightData = {
+    id: baseId,
+    text: fullText,
+    color,
+    pageIndex: 0,
+    prefixContext: startCtx.prefixContext,
+    suffixContext: endCtx.suffixContext,
+    groupId: baseId,
+    compound: true,
+  };
+  return [compound];
 }
 
 /**
  * Re-applies remainder portions of partially-covered highlights.
  * Returns storage entries for each successfully re-applied remainder.
+ *
+ * Picks the occurrence whose visual position is closest to where the
+ * remainder originally was (captured before unwrap). Without this, the
+ * remainder gets dropped on the first matching occurrence in document
+ * order — which is wrong whenever the remainder text appears multiple
+ * times on the page.
  */
 function applyRemainders(
-  remainders: Array<{ text: string; color: string }>,
+  remainders: Array<{ text: string; color: string; origRect: DOMRect | null }>,
 ): HighlightData[] {
   const entries: HighlightData[] = [];
   for (const rem of remainders) {
@@ -545,7 +571,31 @@ function applyRemainders(
     const remOccurrences = findAllTextOccurrences(normalizedRem);
     if (remOccurrences.length === 0) continue;
 
-    const remOcc = remOccurrences[0];
+    // Pick the occurrence visually closest to the original remainder position
+    let bestIdx = 0;
+    if (rem.origRect && remOccurrences.length > 1) {
+      let bestDist = Infinity;
+      for (let i = 0; i < remOccurrences.length; i++) {
+        const r = document.createRange();
+        r.setStart(remOccurrences[i].node, remOccurrences[i].startOffset);
+        r.setEnd(
+          remOccurrences[i].node,
+          remOccurrences[i].startOffset + remOccurrences[i].text.length,
+        );
+        const rect = r.getBoundingClientRect();
+        const dx = rect.left - rem.origRect.left;
+        const dy = rect.top - rem.origRect.top;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'H',location:'content.ts:applyRemainders',message:'remainder visual relocation',data:{text:normalizedRem.slice(0,40),occurrences:remOccurrences.length,bestIdx,bestDist:Math.round(bestDist),origLeft:Math.round(rem.origRect.left),origTop:Math.round(rem.origRect.top)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+    const remOcc = remOccurrences[bestIdx];
     const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
     const { prefixContext: remPrefix, suffixContext: remSuffix } =
       captureContext(remOcc.node, remOcc.startOffset, remOcc.text.length);
@@ -587,20 +637,47 @@ function applyRemainders(
  */
 function addHighlight() {
   const selection = window.getSelection();
+  // #region agent log
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:578',message:'addHighlight entry',data:{hasSelection:!!selection,rangeCount:selection?.rangeCount ?? 0,selPreview:(selection?.toString() ?? '').slice(0,40),highlightColor},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   if (!selection || selection.rangeCount === 0) return;
 
   let range = selection.getRangeAt(0);
-  if (range.collapsed) return;
+  // #region agent log
+  {
+    const _sc:any=range.startContainer; const _ec:any=range.endContainer; const _ca:any=range.commonAncestorContainer;
+    const _scParent = _sc?.parentNode ? (_sc.parentNode as Element).tagName : '?';
+    const _ecParent = _ec?.parentNode ? (_ec.parentNode as Element).tagName : '?';
+    const _caTag = _ca?.nodeType === 1 ? (_ca as Element).tagName : (_ca?.parentNode ? (_ca.parentNode as Element).tagName : '?');
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'I',location:'content.ts:addHighlight-range',message:'range structure',data:{scType:_sc?.nodeType,scParent:_scParent,ecType:_ec?.nodeType,ecParent:_ecParent,caType:_ca?.nodeType,caTag:_caTag,sameContainer:_sc===_ec,startInLink:!!_sc?.parentElement?.closest?.('a'),endInLink:!!_ec?.parentElement?.closest?.('a'),preview:range.toString().slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
+  }
+  // #endregion
+  if (range.collapsed) {
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:583',message:'EXIT: range collapsed',data:{},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return;
+  }
 
   const selectedText = range.toString().trim();
-  if (!selectedText) return;
+  if (!selectedText) {
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:589',message:'EXIT: empty selectedText',data:{rawLen:range.toString().length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return;
+  }
 
   const cleanedText =
     selectedText.length > 500 ? selectedText.substring(0, 500) : selectedText;
   const color = highlightColor || getNextHighlightColor();
 
-  // Capture context before any DOM mutations
-  const { prefixContext, suffixContext } = captureContext(
+  // Capture the selection's visual position BEFORE any DOM mutations.
+  // When re-highlighting text already inside a `.custom-highlight` span,
+  // captureContext() can't see useful surrounding text (the span isolates the
+  // chars), so we use visual proximity to relocate to the correct occurrence
+  // after unwrapping.
+  const origRect = range.getBoundingClientRect();
+  let { prefixContext, suffixContext } = captureContext(
     range.startContainer as Text,
     range.startOffset,
     cleanedText.length,
@@ -624,6 +701,9 @@ function addHighlight() {
     const parentSpan = document.getElementById(onlyId);
     if (parentSpan && parentSpan.contains(range.startContainer) && parentSpan.contains(range.endContainer)) {
       const existingColor = parentSpan.style.backgroundColor || "";
+      // #region agent log
+      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:625',message:'same-color skip check',data:{existingColor,color,wouldSkip:existingColor===color,touchedCount:touchedHighlightIds.size},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (existingColor === color) {
         return;
       }
@@ -634,6 +714,11 @@ function addHighlight() {
   interface RemainderInfo {
     text: string;
     color: string;
+    /** Bounding rect captured BEFORE unwrap so we can re-locate the
+     *  exact occurrence after the DOM is mutated. Without this, multiple
+     *  occurrences of the remainder text get disambiguated as "the first
+     *  one in document order" and the highlight jumps elsewhere. */
+    origRect: DOMRect | null;
   }
   const remainders: RemainderInfo[] = [];
 
@@ -662,26 +747,42 @@ function addHighlight() {
       overlapRange.setEnd(range.endContainer, range.endOffset);
       const overlapLen = overlapRange.toString().length;
       const rem = spanText.slice(overlapLen);
-      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+      if (rem.trim()) {
+        // Remainder is the right portion of the span — capture its rect
+        const remRange = document.createRange();
+        remRange.setStart(range.endContainer, range.endOffset);
+        remRange.setEnd(spanRange.endContainer, spanRange.endOffset);
+        remainders.push({ text: rem, color: spanColor, origRect: remRange.getBoundingClientRect() });
+      }
     } else if (!selStartsBeforeSpan && selEndsAfterSpan) {
       const overlapRange = document.createRange();
       overlapRange.setStart(range.startContainer, range.startOffset);
       overlapRange.setEnd(spanRange.endContainer, spanRange.endOffset);
       const overlapLen = overlapRange.toString().length;
       const rem = spanText.slice(0, spanText.length - overlapLen);
-      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+      if (rem.trim()) {
+        // Remainder is the left portion of the span — capture its rect
+        const remRange = document.createRange();
+        remRange.setStart(spanRange.startContainer, spanRange.startOffset);
+        remRange.setEnd(range.startContainer, range.startOffset);
+        remainders.push({ text: rem, color: spanColor, origRect: remRange.getBoundingClientRect() });
+      }
     } else if (!selStartsBeforeSpan && !selEndsAfterSpan) {
       const prefixRange = document.createRange();
       prefixRange.setStart(spanRange.startContainer, spanRange.startOffset);
       prefixRange.setEnd(range.startContainer, range.startOffset);
       const prefixText = prefixRange.toString();
-      if (prefixText.trim()) remainders.push({ text: prefixText, color: spanColor });
+      if (prefixText.trim()) {
+        remainders.push({ text: prefixText, color: spanColor, origRect: prefixRange.getBoundingClientRect() });
+      }
 
       const suffixRange = document.createRange();
       suffixRange.setStart(range.endContainer, range.endOffset);
       suffixRange.setEnd(spanRange.endContainer, spanRange.endOffset);
       const suffixText = suffixRange.toString();
-      if (suffixText.trim()) remainders.push({ text: suffixText, color: spanColor });
+      if (suffixText.trim()) {
+        remainders.push({ text: suffixText, color: spanColor, origRect: suffixRange.getBoundingClientRect() });
+      }
     }
   }
 
@@ -728,15 +829,46 @@ function addHighlight() {
       return;
     }
 
-    const bestIdx = resolveOccurrenceIndex(occurrences, {
-      id: "", text: cleanedText, color,
-      prefixContext, suffixContext,
-    });
+    // Pick the occurrence whose visual position is closest to the original
+    // selection. This is the only reliable signal when the selection started
+    // inside an existing highlight span (where prefix/suffix context is
+    // unreliable because the span isolated the text).
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < occurrences.length; i++) {
+      const occRange = document.createRange();
+      occRange.setStart(occurrences[i].node, occurrences[i].startOffset);
+      occRange.setEnd(
+        occurrences[i].node,
+        occurrences[i].startOffset + occurrences[i].text.length,
+      );
+      const r = occRange.getBoundingClientRect();
+      const dx = r.left - origRect.left;
+      const dy = r.top - origRect.top;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
     const best = occurrences[bestIdx];
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'F',location:'content.ts:relocate',message:'visual relocation',data:{occurrences:occurrences.length,bestIdx,bestDist:Math.round(bestDist),origLeft:Math.round(origRect.left),origTop:Math.round(origRect.top),text:cleanedText.slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
     range = document.createRange();
     range.setStart(best.node, best.startOffset);
     range.setEnd(best.node, best.startOffset + best.text.length);
+
+    // Re-capture context from the clean text node so it's accurate for
+    // future reloads.
+    const recaptured = captureContext(
+      best.node,
+      best.startOffset,
+      best.text.length,
+    );
+    prefixContext = recaptured.prefixContext;
+    suffixContext = recaptured.suffixContext;
   }
 
   // --- Step 3: Apply highlight via surroundContents (safe, no extractContents) ---
@@ -747,10 +879,19 @@ function addHighlight() {
 
   try {
     range.surroundContents(highlightElement);
-  } catch {
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:752',message:'surroundContents OK',data:{color,id:highlightId,touchedCount:touchedHighlightIds.size,needsRelocate},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  } catch (err) {
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:756',message:'surroundContents FAILED',data:{err:String(err),color,touchedCount:touchedHighlightIds.size,needsRelocate,textLen:cleanedText.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // surroundContents failed — try gap-fill as last resort
     const gapEntries = gapFillRange(range, color, highlightId);
     const remEntries2 = applyRemainders(remainders);
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:760',message:'fallback gap-fill result',data:{gap:gapEntries.length,rem:remEntries2.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (gapEntries.length === 0 && remEntries2.length === 0) return;
 
     const pageKey = normalizeUrl(window.location.href);

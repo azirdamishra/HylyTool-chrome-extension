@@ -163,10 +163,16 @@ document.addEventListener("DOMContentLoaded", () => {
   // Event listeners for color swatches
   colorSwatches.forEach((swatch) => {
     swatch.addEventListener("click", (e) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'E',location:'popup.ts:165',message:'swatch click',data:{isCustom:swatch.classList.contains('custom-color-button'),disabled:swatch.disabled,extEnabled:extensionToggle.checked,color:swatch.dataset.color},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (swatch.classList.contains("custom-color-button")) {
         if (!extensionToggle.checked) return;
         // Open native picker only when the + button is clicked.
         colorPicker.click();
+        // #region agent log
+        fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'G',location:'popup.ts:custom-btn',message:'custom-color clicked, called colorPicker.click()',data:{pickerDisabled:colorPicker.disabled,pickerStyle:getComputedStyle(colorPicker).pointerEvents},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         e.stopPropagation();
       } else {
         const color = swatch.dataset.color ?? "#ffff00";
@@ -178,6 +184,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Color picker event listener
   colorPicker.addEventListener("change", () => {
     const color = colorPicker.value;
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'D',location:'popup.ts:179',message:'colorPicker change',data:{color},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     updateSelectedColor(color);
   });
 

@@ -11,6 +11,23 @@ export interface HighlightData {
   totalInstances?: number;
   prefixContext?: string;
   suffixContext?: string;
+  /**
+   * Compound highlights are produced when a single drag-select crosses inline
+   * element boundaries (e.g. text + <a> + text). They are stored as ONE
+   * storage entry but render as N adjacent .custom-highlight spans, all
+   * tagged with the same `data-group` attribute. Right-clicking any of them
+   * removes the entire group.
+   *
+   * For compound entries, `text` holds the FULL raw `range.toString()` of the
+   * original selection (character-perfect, spaces and punctuation included).
+   * On reload we search for that exact string inside a document-wide
+   * concatenated text buffer (which transparently crosses element boundaries),
+   * map the matched byte offsets back to text nodes, rebuild the Range, and
+   * replay gap-fill. This avoids the short-anchor ambiguity that the previous
+   * "first-segment + last-segment" design suffered from.
+   */
+  groupId?: string;
+  compound?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +97,181 @@ export function captureContext(
       startOffset + length + CONTEXT_SIZE,
     ),
   };
+}
+
+/**
+ * Like captureContext but walks ACROSS adjacent text nodes via a TreeWalker
+ * so we get useful surrounding text even when the highlight starts/ends at an
+ * element boundary (e.g. immediately before/after an <a> tag whose text node
+ * is isolated). Used for compound highlights where in-node context is empty.
+ */
+export function captureContextAcross(
+  node: Text,
+  startOffset: number,
+  length: number,
+): { prefixContext: string; suffixContext: string } {
+  const root = document.body;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n: Node): number => {
+      const p = n.parentNode;
+      if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE")
+        return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  } as NodeFilter);
+
+  // Position walker at `node`
+  walker.currentNode = node;
+
+  // Build prefix: walk backward across text nodes, prepending text
+  let prefix = (node.textContent ?? "").slice(0, startOffset);
+  while (prefix.length < CONTEXT_SIZE) {
+    const prev = walker.previousNode();
+    if (!prev) break;
+    prefix = (prev.textContent ?? "") + prefix;
+  }
+  prefix = prefix.slice(-CONTEXT_SIZE);
+
+  // Reset walker and build suffix: walk forward across text nodes
+  walker.currentNode = node;
+  let suffix = (node.textContent ?? "").slice(startOffset + length);
+  while (suffix.length < CONTEXT_SIZE) {
+    const next = walker.nextNode();
+    if (!next) break;
+    suffix = suffix + (next.textContent ?? "");
+  }
+  suffix = suffix.slice(0, CONTEXT_SIZE);
+
+  return { prefixContext: prefix, suffixContext: suffix };
+}
+
+/**
+ * Builds a document-wide concatenated-text buffer and an anchor map for
+ * turning a buffer offset back into (textNode, offsetInNode).
+ *
+ * Skips SCRIPT/STYLE and any text node already inside a .custom-highlight
+ * (since those represent already-applied highlights we're reapplying on top
+ * of). Also skips empty / whitespace-only nodes to stay aligned with the
+ * gap-fill wrapping logic that ignores the same nodes.
+ */
+export function buildDocTextConcat(root: HTMLElement = document.body): {
+  concat: string;
+  anchors: { node: Text; start: number; end: number }[];
+} {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n: Node): number => {
+      const p = n.parentNode as Element | null;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      if (p.nodeName === "SCRIPT" || p.nodeName === "STYLE")
+        return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  } as NodeFilter);
+
+  const anchors: { node: Text; start: number; end: number }[] = [];
+  let concat = "";
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const tn = node as Text;
+    const txt = tn.textContent ?? "";
+    if (!txt) continue;
+    const start = concat.length;
+    concat += txt;
+    anchors.push({ node: tn, start, end: concat.length });
+  }
+  return { concat, anchors };
+}
+
+/** Maps a concat-buffer offset back to (node, offsetInNode). */
+export function mapConcatOffset(
+  anchors: { node: Text; start: number; end: number }[],
+  offset: number,
+): { node: Text; offset: number } | null {
+  // Binary search
+  let lo = 0;
+  let hi = anchors.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const a = anchors[mid];
+    if (offset < a.start) hi = mid - 1;
+    else if (offset > a.end) lo = mid + 1;
+    else {
+      // offset <= end: pick this anchor. If offset == a.end and there's a
+      // next anchor starting at the same logical position, prefer the later
+      // one so setStart/setEnd land at offset 0 of the next node (cleaner
+      // boundary for surroundContents).
+      if (offset === a.end && mid + 1 < anchors.length) {
+        const next = anchors[mid + 1];
+        if (next.start === a.end) return { node: next.node, offset: 0 };
+      }
+      return { node: a.node, offset: offset - a.start };
+    }
+  }
+  return null;
+}
+
+/**
+ * Applies a color highlight to every text node inside `range`, wrapping each
+ * in its own .custom-highlight span and tagging them all with `data-group`
+ * for grouped operations (right-click delete, reapply on reload).
+ *
+ * Returns the IDs of the wrapped spans (in document order). Does NOT touch
+ * storage. Returns empty array if no spans were created.
+ */
+export function applyGapFillToRange(
+  range: Range,
+  color: string,
+  groupId: string,
+): string[] {
+  const ancestor = range.commonAncestorContainer;
+  const walkRoot =
+    ancestor.nodeType === Node.TEXT_NODE
+      ? (ancestor.parentNode as Node)
+      : ancestor;
+  const walker = document.createTreeWalker(walkRoot, NodeFilter.SHOW_TEXT);
+
+  const segs: { node: Text; sOff: number; eOff: number }[] = [];
+  let cur: Node | null;
+  while ((cur = walker.nextNode())) {
+    try {
+      if (!range.intersectsNode(cur)) continue;
+    } catch {
+      continue;
+    }
+    const tn = cur as Text;
+    const p = tn.parentNode;
+    if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
+    if (!tn.textContent || !tn.textContent.trim()) continue;
+    let sOff = 0;
+    let eOff = tn.length;
+    if (tn === range.startContainer) sOff = range.startOffset;
+    if (tn === range.endContainer) eOff = range.endOffset;
+    if (sOff >= eOff) continue;
+    const seg = tn.textContent.substring(sOff, eOff);
+    if (!seg.trim()) continue;
+    segs.push({ node: tn, sOff, eOff });
+  }
+
+  const ids: string[] = [];
+  // Wrap in REVERSE so earlier text nodes' refs remain valid
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const { node, sOff, eOff } = segs[i];
+    const r = document.createRange();
+    r.setStart(node, sOff);
+    r.setEnd(node, eOff);
+    const span = document.createElement("span");
+    span.className = "custom-highlight";
+    span.id = `${groupId}-s${String(i)}`;
+    span.setAttribute("data-group", groupId);
+    span.style.backgroundColor = color;
+    try {
+      r.surroundContents(span);
+      ids.push(span.id);
+    } catch {
+      // Skip segments that can't be wrapped
+    }
+  }
+  return ids;
 }
 
 /**
@@ -284,14 +476,97 @@ export function reapplyHighlightsFromStorage(
 
   removeAllHighlights(container);
 
-  // Pass 1: resolve all targets on the clean DOM
+  // ---- COMPOUND highlights: apply first, in their own pass ----
+  // These are produced by drag-selects that crossed inline elements (e.g. a
+  // hyperlink). They store ONE entry with a start anchor and an end anchor;
+  // we rebuild the original Range and re-run gap-fill so the same set of
+  // segments gets wrapped, all sharing data-group=item.groupId.
+  // Compound entries store the FULL selected text (character-perfect). We
+  // build a document-wide concatenated-text buffer (which transparently spans
+  // element boundaries), search for the exact stored text within it, pick the
+  // best match using prefix/suffix context, map the matched byte offsets back
+  // to text nodes, rebuild the Range, and replay gap-fill.
+  const compoundItems = highlights.filter((h) => h.compound);
+  const simpleItems = highlights.filter((h) => !h.compound);
+
+  if (compoundItems.length > 0) {
+    const { concat, anchors } = buildDocTextConcat(container);
+
+    for (const item of compoundItems) {
+      try {
+        const search = item.text;
+        if (!search || search.length < 2) continue;
+
+        const positions: number[] = [];
+        let from = 0;
+        while (from <= concat.length - search.length) {
+          const p = concat.indexOf(search, from);
+          if (p === -1) break;
+          positions.push(p);
+          from = p + 1;
+        }
+
+        // #region agent log
+        fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'K',location:'common.ts:reapply-compound',message:'compound lookup',data:{id:item.id,preview:search.slice(0,60),textLen:search.length,matches:positions.length,hasPrefix:!!item.prefixContext,hasSuffix:!!item.suffixContext},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+
+        if (positions.length === 0) continue;
+
+        let bestPos = positions[0];
+        if (
+          positions.length > 1 &&
+          (item.prefixContext || item.suffixContext)
+        ) {
+          let bestScore = -1;
+          for (const pos of positions) {
+            const actualPrefix = concat.slice(
+              Math.max(0, pos - CONTEXT_SIZE),
+              pos,
+            );
+            const actualSuffix = concat.slice(
+              pos + search.length,
+              pos + search.length + CONTEXT_SIZE,
+            );
+            let score = 0;
+            if (item.prefixContext) {
+              if (actualPrefix.endsWith(item.prefixContext)) score += 2;
+              else if (actualPrefix.includes(item.prefixContext)) score += 1;
+            }
+            if (item.suffixContext) {
+              if (actualSuffix.startsWith(item.suffixContext)) score += 2;
+              else if (actualSuffix.includes(item.suffixContext)) score += 1;
+            }
+            if (score > bestScore) {
+              bestScore = score;
+              bestPos = pos;
+            }
+          }
+        }
+
+        const startMap = mapConcatOffset(anchors, bestPos);
+        const endMap = mapConcatOffset(anchors, bestPos + search.length);
+        if (!startMap || !endMap) continue;
+
+        const range = document.createRange();
+        range.setStart(startMap.node, startMap.offset);
+        range.setEnd(endMap.node, endMap.offset);
+
+        const groupId = item.groupId ?? item.id;
+        applyGapFillToRange(range, item.color, groupId);
+      } catch (err) {
+        console.error(`Error applying compound highlight:`, err);
+      }
+    }
+  }
+
+  // Pass 1: resolve all simple targets on the clean DOM
   const targets: Array<{
     item: HighlightData;
     occurrence: { node: Text; startOffset: number; text: string };
   }> = [];
 
   const skipped: string[] = [];
-  for (const item of highlights) {
+  for (const item of simpleItems) {
     try {
       const normalizedText = item.text.trim().replace(/\s+/g, " ");
       const allOccurrences = findAllTextOccurrences(normalizedText);
