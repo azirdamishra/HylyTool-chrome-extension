@@ -239,7 +239,7 @@ export function applyGapFillToRange(
       continue;
     }
     const tn = cur as Text;
-    const p = tn.parentNode;
+    const p = tn.parentNode as Element | null;
     if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
     if (!tn.textContent || !tn.textContent.trim()) continue;
     let sOff = 0;
@@ -271,6 +271,7 @@ export function applyGapFillToRange(
       // Skip segments that can't be wrapped
     }
   }
+
   return ids;
 }
 
@@ -505,10 +506,6 @@ export function reapplyHighlightsFromStorage(
           positions.push(p);
           from = p + 1;
         }
-
-        // #region agent log
-        fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'K',location:'common.ts:reapply-compound',message:'compound lookup',data:{id:item.id,preview:search.slice(0,60),textLen:search.length,matches:positions.length,hasPrefix:!!item.prefixContext,hasSuffix:!!item.suffixContext},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
 
         if (positions.length === 0) continue;
 

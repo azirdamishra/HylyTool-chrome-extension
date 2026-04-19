@@ -173,10 +173,6 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
         document.addEventListener("mouseup", handleMouseUp);
       }
 
-      // #region agent log
-      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'A',location:'content.ts:175',message:'init complete',data:{enabled,highlightColor,attachedMouseup:enabled,url:window.location.href},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-
       initComplete = true;
 
       if (enabled && document.readyState === "complete") {
@@ -188,10 +184,6 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
 
 // Handle mouseup event for highlighting
 function handleMouseUp() {
-  // #region agent log
-  const _sel = window.getSelection();
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'A',location:'content.ts:184',message:'handleMouseUp fired',data:{enabled,runtimeId:!!chrome.runtime?.id,selLen:_sel?.toString().length ?? 0,selPreview:(_sel?.toString() ?? '').slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (!enabled) return;
   if (!chrome.runtime?.id) return;
 
@@ -210,9 +202,6 @@ chrome.storage.onChanged.addListener(
   ) => {
     if (namespace === "local") {
       const colorChange = changes.highlightColor;
-      // #region agent log
-      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'D',location:'content.ts:202',message:'storage.onChanged local',data:{keys:Object.keys(changes),colorChange:colorChange?{old:colorChange.oldValue,new:colorChange.newValue}:null,currentHighlightColor:highlightColor},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (typeof colorChange !== "undefined") {
         const newValue: unknown = colorChange.newValue;
         if (typeof newValue === "string") {
@@ -530,10 +519,6 @@ function gapFillRange(
   // Wrap every text node in the range and tag them all with data-group=baseId.
   const wrappedIds = applyGapFillToRange(range, color, baseId);
 
-  // #region agent log
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'K',location:'content.ts:gapFillRange',message:'compound stored',data:{wrappedCount:wrappedIds.length,textLen:fullText.length,textPreview:fullText.slice(0,60),prefixPreview:startCtx.prefixContext.slice(-20),suffixPreview:endCtx.suffixContext.slice(0,20)},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-
   if (wrappedIds.length === 0) return [];
 
   // ONE compound entry per drag-select regardless of segment count.
@@ -591,9 +576,6 @@ function applyRemainders(
           bestIdx = i;
         }
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'H',location:'content.ts:applyRemainders',message:'remainder visual relocation',data:{text:normalizedRem.slice(0,40),occurrences:remOccurrences.length,bestIdx,bestDist:Math.round(bestDist),origLeft:Math.round(rem.origRect.left),origTop:Math.round(rem.origRect.top)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     }
     const remOcc = remOccurrences[bestIdx];
     const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
@@ -637,35 +619,13 @@ function applyRemainders(
  */
 function addHighlight() {
   const selection = window.getSelection();
-  // #region agent log
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:578',message:'addHighlight entry',data:{hasSelection:!!selection,rangeCount:selection?.rangeCount ?? 0,selPreview:(selection?.toString() ?? '').slice(0,40),highlightColor},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (!selection || selection.rangeCount === 0) return;
 
   let range = selection.getRangeAt(0);
-  // #region agent log
-  {
-    const _sc:any=range.startContainer; const _ec:any=range.endContainer; const _ca:any=range.commonAncestorContainer;
-    const _scParent = _sc?.parentNode ? (_sc.parentNode as Element).tagName : '?';
-    const _ecParent = _ec?.parentNode ? (_ec.parentNode as Element).tagName : '?';
-    const _caTag = _ca?.nodeType === 1 ? (_ca as Element).tagName : (_ca?.parentNode ? (_ca.parentNode as Element).tagName : '?');
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'I',location:'content.ts:addHighlight-range',message:'range structure',data:{scType:_sc?.nodeType,scParent:_scParent,ecType:_ec?.nodeType,ecParent:_ecParent,caType:_ca?.nodeType,caTag:_caTag,sameContainer:_sc===_ec,startInLink:!!_sc?.parentElement?.closest?.('a'),endInLink:!!_ec?.parentElement?.closest?.('a'),preview:range.toString().slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
-  }
-  // #endregion
-  if (range.collapsed) {
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:583',message:'EXIT: range collapsed',data:{},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    return;
-  }
+  if (range.collapsed) return;
 
   const selectedText = range.toString().trim();
-  if (!selectedText) {
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:589',message:'EXIT: empty selectedText',data:{rawLen:range.toString().length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    return;
-  }
+  if (!selectedText) return;
 
   const cleanedText =
     selectedText.length > 500 ? selectedText.substring(0, 500) : selectedText;
@@ -701,9 +661,6 @@ function addHighlight() {
     const parentSpan = document.getElementById(onlyId);
     if (parentSpan && parentSpan.contains(range.startContainer) && parentSpan.contains(range.endContainer)) {
       const existingColor = parentSpan.style.backgroundColor || "";
-      // #region agent log
-      fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'B',location:'content.ts:625',message:'same-color skip check',data:{existingColor,color,wouldSkip:existingColor===color,touchedCount:touchedHighlightIds.size},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (existingColor === color) {
         return;
       }
@@ -852,9 +809,6 @@ function addHighlight() {
       }
     }
     const best = occurrences[bestIdx];
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',runId:'post-fix',hypothesisId:'F',location:'content.ts:relocate',message:'visual relocation',data:{occurrences:occurrences.length,bestIdx,bestDist:Math.round(bestDist),origLeft:Math.round(origRect.left),origTop:Math.round(origRect.top),text:cleanedText.slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     range = document.createRange();
     range.setStart(best.node, best.startOffset);
@@ -879,19 +833,10 @@ function addHighlight() {
 
   try {
     range.surroundContents(highlightElement);
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:752',message:'surroundContents OK',data:{color,id:highlightId,touchedCount:touchedHighlightIds.size,needsRelocate},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  } catch (err) {
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:756',message:'surroundContents FAILED',data:{err:String(err),color,touchedCount:touchedHighlightIds.size,needsRelocate,textLen:cleanedText.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+  } catch {
     // surroundContents failed — try gap-fill as last resort
     const gapEntries = gapFillRange(range, color, highlightId);
     const remEntries2 = applyRemainders(remainders);
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'125a7e'},body:JSON.stringify({sessionId:'125a7e',hypothesisId:'C',location:'content.ts:760',message:'fallback gap-fill result',data:{gap:gapEntries.length,rem:remEntries2.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (gapEntries.length === 0 && remEntries2.length === 0) return;
 
     const pageKey = normalizeUrl(window.location.href);
