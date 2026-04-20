@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import { setBadgeText, exportHighlights, importHighlights } from "./common";
+import { setBadgeText, exportHighlights, importHighlights, flushAllHighlights } from "./common";
 
 console.log("Hello world from Hylytool!");
 
@@ -247,6 +247,31 @@ document.addEventListener("DOMContentLoaded", () => {
 
   importButton.addEventListener("click", () => {
     importFileInput.click();
+  });
+
+  // Flush (purge) all highlights from storage
+  const purgeButton = document.getElementById(
+    "purge-highlights",
+  ) as HTMLButtonElement;
+
+  purgeButton.addEventListener("click", () => {
+    if (
+      !confirm(
+        "This will permanently delete ALL highlights across every page. This cannot be undone. Continue?",
+      )
+    )
+      return;
+
+    void (async () => {
+      try {
+        await flushAllHighlights();
+        console.log("All highlights purged from storage");
+        alert("All highlights have been deleted. Reload any open pages to clear them visually.");
+      } catch (err) {
+        console.error("Purge failed:", err);
+        alert("Purge failed — please try again.");
+      }
+    })();
   });
 
   importFileInput.addEventListener("change", () => {

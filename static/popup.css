@@ -281,6 +281,35 @@ input[type="color"]:focus {
   background-color: #0c7cd5;
 }
 
+.purge-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e9ecef;
+}
+
+.purge-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font-size: 0.78rem;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.purge-button:hover {
+  color: #dc2626;
+}
+
+.purge-button:active {
+  color: #991b1b;
+}
+
 .button-group {
   display: flex;
   gap: 8px;

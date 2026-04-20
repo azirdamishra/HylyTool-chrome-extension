@@ -349,6 +349,34 @@ export async function exportHighlights(): Promise<string> {
 }
 
 /**
+ * Removes all URL-keyed highlight entries from both chrome.storage.sync and
+ * chrome.storage.local, leaving non-highlight settings (enabled, item, etc.)
+ * untouched.
+ */
+export async function flushAllHighlights(): Promise<void> {
+  const urlKeysFrom = (store: chrome.storage.StorageArea): Promise<string[]> =>
+    new Promise((resolve) => {
+      store.get(null, (data: Record<string, unknown>) => {
+        resolve(Object.keys(data).filter((k) => k.startsWith("http")));
+      });
+    });
+
+  const [syncKeys, localKeys] = await Promise.all([
+    urlKeysFrom(chrome.storage.sync),
+    urlKeysFrom(chrome.storage.local),
+  ]);
+
+  await Promise.all([
+    syncKeys.length > 0
+      ? new Promise<void>((resolve) => chrome.storage.sync.remove(syncKeys, resolve))
+      : Promise.resolve(),
+    localKeys.length > 0
+      ? new Promise<void>((resolve) => chrome.storage.local.remove(localKeys, resolve))
+      : Promise.resolve(),
+  ]);
+}
+
+/**
  * Parses an exported JSON string and writes each URL entry back to
  * chrome.storage.sync, with a per-item quota fallback to local storage.
  */
