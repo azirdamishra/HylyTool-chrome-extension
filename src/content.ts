@@ -645,15 +645,28 @@ function addHighlight() {
 
   // Collect IDs of every existing highlight that intersects the selection
   const touchedHighlightIds = new Set<string>();
+  const touchedGroupIds = new Set<string>();
   document.querySelectorAll(".custom-highlight").forEach((span) => {
     try {
       if (span.id && range.intersectsNode(span)) {
         touchedHighlightIds.add(span.id);
+        const g = span.getAttribute("data-group");
+        if (g) touchedGroupIds.add(g);
       }
     } catch {
       /* non-intersectable */
     }
   });
+
+  // Predicate: does this stored entry represent a touched highlight?
+  // Matches simple entries by id AND compound entries by their stored id
+  // (which equals groupId) or explicit groupId field. DOM spans for compound
+  // segments have id = `${groupId}-s${n}` so the stored compound id won't be
+  // in touchedHighlightIds — we must also check touchedGroupIds.
+  const isTouched = (h: HighlightData): boolean =>
+    touchedHighlightIds.has(h.id) ||
+    touchedGroupIds.has(h.id) ||
+    (h.groupId !== undefined && touchedGroupIds.has(h.groupId));
 
   // Skip if fully inside a single existing highlight OF THE SAME COLOR
   if (touchedHighlightIds.size === 1) {
@@ -743,6 +756,27 @@ function addHighlight() {
     }
   }
 
+  // For every compound group that has ANY segment touched by the selection,
+  // preserve the UNTOUCHED segments as full remainders and mark them for
+  // unwrap. The compound's single storage entry is being removed below
+  // (its id === groupId is in touchedGroupIds), so without this the
+  // untouched portions of the old compound would vanish on reload.
+  for (const gid of touchedGroupIds) {
+    const groupSpans = document.querySelectorAll<HTMLElement>(
+      `.custom-highlight[data-group="${gid}"]`,
+    );
+    groupSpans.forEach((el) => {
+      if (!el.id || touchedHighlightIds.has(el.id)) return;
+      const segText = el.textContent ?? "";
+      if (!segText.trim()) return;
+      const segColor =
+        el.style.backgroundColor || el.getAttribute("data-color") || "";
+      const segRect = el.getBoundingClientRect();
+      remainders.push({ text: segText, color: segColor, origRect: segRect });
+      touchedHighlightIds.add(el.id);
+    });
+  }
+
   // --- Step 1: Unwrap any touched highlights so surroundContents won't fail ---
   let needsRelocate = false;
   if (touchedHighlightIds.size > 0) {
@@ -778,7 +812,7 @@ function addHighlight() {
 
       const pageKey = normalizeUrl(window.location.href);
       const existing = getCachedHighlights(pageKey);
-      const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+      const updated = existing.filter((h) => !isTouched(h));
       for (const entry of gapEntries) updated.push(entry);
       for (const entry of remEntries) updated.push(entry);
 
@@ -841,7 +875,7 @@ function addHighlight() {
 
     const pageKey = normalizeUrl(window.location.href);
     const existing = getCachedHighlights(pageKey);
-    const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+    const updated = existing.filter((h) => !isTouched(h));
     for (const entry of gapEntries) updated.push(entry);
     for (const entry of remEntries2) updated.push(entry);
     enqueuePersistHighlights(pageKey, updated);
@@ -863,7 +897,7 @@ function addHighlight() {
 
   const pageKey = normalizeUrl(window.location.href);
   const existing = getCachedHighlights(pageKey);
-  const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+  const updated = existing.filter((h) => !isTouched(h));
   updated.push(highlightData);
   for (const rem of remainderEntries) {
     updated.push(rem);

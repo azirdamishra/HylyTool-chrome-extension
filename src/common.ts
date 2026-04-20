@@ -562,7 +562,10 @@ export function reapplyHighlightsFromStorage(
     occurrence: { node: Text; startOffset: number; text: string };
   }> = [];
 
-  const skipped: string[] = [];
+  // Items whose stored text spans multiple text nodes (because of inline
+  // elements like links/sup) can't be located by findAllTextOccurrences.
+  // Keep their full item so we can retry them via the concat-buffer path.
+  const skippedItems: HighlightData[] = [];
   for (const item of simpleItems) {
     try {
       const normalizedText = item.text.trim().replace(/\s+/g, " ");
@@ -570,7 +573,7 @@ export function reapplyHighlightsFromStorage(
 
       if (allOccurrences.length === 0) {
         console.warn(`No occurrences found for "${normalizedText}", skipping`);
-        skipped.push(item.id);
+        skippedItems.push(item);
         continue;
       }
 
@@ -578,7 +581,7 @@ export function reapplyHighlightsFromStorage(
       targets.push({ item, occurrence: allOccurrences[targetIndex] });
     } catch (err) {
       console.error(`Error resolving target for highlight:`, err);
-      skipped.push(item.id);
+      skippedItems.push(item);
     }
   }
 
@@ -587,17 +590,17 @@ export function reapplyHighlightsFromStorage(
   // may split text nodes, invalidating stored node references.
   targets.sort((a, b) => b.item.text.length - a.item.text.length);
 
-  let applied = 0;
-  let failed = 0;
-  const failedIds: string[] = [];
+  // Items whose Pass 2 apply failed — retry via concat-buffer fallback too.
+  const failedItems: HighlightData[] = [];
   for (const { item } of targets) {
     try {
       const normalizedText = item.text.trim().replace(/\s+/g, " ");
       const freshOccurrences = findAllTextOccurrences(normalizedText);
 
       if (freshOccurrences.length === 0) {
-        failed++;
-        failedIds.push(item.id);
+        // Earlier Pass 2 applies may have split the text node this item
+        // was resolved against — send it to the fallback pipeline.
+        failedItems.push(item);
         continue;
       }
 
@@ -614,15 +617,50 @@ export function reapplyHighlightsFromStorage(
 
       if (!success) {
         console.warn(`Failed to highlight "${item.text}", skipping`);
-        failed++;
-        failedIds.push(item.id);
-      } else {
-        applied++;
+        failedItems.push(item);
       }
     } catch (err) {
       console.error(`Error applying highlight for "${item.text}":`, err);
-      failed++;
-      failedIds.push(item.id);
+      failedItems.push(item);
+    }
+  }
+
+  // Fallback pass: for simple items that couldn't be located in Pass 1
+  // (text spans multiple text nodes because of inline <a>/<sup>/etc.) OR
+  // that failed Pass 2's surroundContents, re-locate via the doc-wide
+  // concat buffer — the same mechanism used for compound highlights — and
+  // apply with gap-fill.
+  const fallbackItems = [...skippedItems, ...failedItems];
+  if (fallbackItems.length > 0) {
+    const { concat, anchors } = buildDocTextConcat(container);
+    for (const item of fallbackItems) {
+      try {
+        const raw = item.text;
+        const normalized = raw.trim().replace(/\s+/g, " ");
+        // Try exact stored text first (preserves whitespace), then normalised.
+        let search = raw;
+        let pos = search.length >= 2 ? concat.indexOf(search) : -1;
+        if (pos === -1 && normalized !== raw && normalized.length >= 2) {
+          search = normalized;
+          pos = concat.indexOf(search);
+        }
+        if (pos === -1) continue;
+
+        const startMap = mapConcatOffset(anchors, pos);
+        const endMap = mapConcatOffset(anchors, pos + search.length);
+        if (!startMap || !endMap) continue;
+
+        const range = document.createRange();
+        range.setStart(startMap.node, startMap.offset);
+        range.setEnd(endMap.node, endMap.offset);
+
+        // Use the item's own id as groupId so future deletes/overlays resolve
+        // correctly via data-group matching.
+        const groupId = item.groupId ?? item.id;
+        applyGapFillToRange(range, item.color, groupId);
+      } catch (err) {
+        console.error(`Fallback apply failed for "${item.text}":`, err);
+      }
     }
   }
 
