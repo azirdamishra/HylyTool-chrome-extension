@@ -3,6 +3,8 @@ import {
   reapplyHighlightsFromStorage,
   normalizeUrl,
   captureContext,
+  captureContextAcross,
+  applyGapFillToRange,
   syncGet,
   syncSet,
   findAllTextOccurrences,
@@ -225,7 +227,7 @@ function applyHighlightsOnce(): void {
     reapplyHighlightsFromStorage(highlights);
   });
 
-  setupDeleteTooltip();
+  setupDeleteContextMenu();
 }
 
 window.addEventListener("load", () => {
@@ -235,85 +237,163 @@ window.addEventListener("load", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete tooltip
+// Delete via right-click context menu
+//
+// A small custom menu is shown only when the user right-clicks on a
+// `.custom-highlight` span. This lets normal left-clicks fall through to any
+// underlying link/button (the previous click-tooltip would intercept those
+// and prevent users from following highlighted hyperlinks).
 // ---------------------------------------------------------------------------
 
 let activeHighlightId: string | null = null;
-let deleteTooltip: HTMLElement | null = null;
+let deleteMenu: HTMLElement | null = null;
 
-function setupDeleteTooltip() {
-  if (deleteTooltip) return; // guard against double-init
+function setupDeleteContextMenu() {
+  if (deleteMenu) return; // guard against double-init
 
-  deleteTooltip = document.createElement("div");
-  Object.assign(deleteTooltip.style, {
+  deleteMenu = document.createElement("div");
+  Object.assign(deleteMenu.style, {
     position: "absolute",
-    background: "#222",
-    color: "#fff",
-    borderRadius: "4px",
-    padding: "5px 10px",
-    fontSize: "12px",
-    cursor: "pointer",
+    background: "#ffffff",
+    color: "#222",
+    border: "1px solid rgba(0,0,0,0.12)",
+    borderRadius: "6px",
+    padding: "4px 0",
+    fontSize: "13px",
+    fontFamily:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     zIndex: "2147483647",
     display: "none",
     userSelect: "none",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
     whiteSpace: "nowrap",
-    lineHeight: "1.4",
+    minWidth: "150px",
   });
-  deleteTooltip.textContent = "Remove highlight";
-  document.body.appendChild(deleteTooltip);
 
-  // Delegated click: show tooltip when a highlight is clicked
-  document.addEventListener("click", (e) => {
-    if (!enabled) return;
-    const target = e.target as Element;
+  const removeItem = document.createElement("div");
+  removeItem.textContent = "Remove highlight";
+  Object.assign(removeItem.style, {
+    padding: "6px 14px",
+    cursor: "pointer",
+    color: "#222",
+  });
+  removeItem.addEventListener("mouseenter", () => {
+    removeItem.style.background = "#f0f0f0";
+  });
+  removeItem.addEventListener("mouseleave", () => {
+    removeItem.style.background = "";
+  });
+  removeItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removeActiveHighlight();
+  });
 
-    // If the tooltip itself was clicked, let its own listener handle it
-    if (deleteTooltip && (target === deleteTooltip || deleteTooltip.contains(target))) {
+  deleteMenu.appendChild(removeItem);
+  document.body.appendChild(deleteMenu);
+
+  // Show on right-click over a highlight
+  document.addEventListener("contextmenu", (e) => {
+    if (!enabled) {
+      hideDeleteMenu();
       return;
     }
+    const target = e.target as Element | null;
+    const highlight =
+      target?.closest?.(".custom-highlight") as HTMLElement | null;
+    if (!highlight?.id) {
+      hideDeleteMenu();
+      return;
+    }
+    e.preventDefault();
+    activeHighlightId = highlight.id;
+    showDeleteMenuAt(e.pageX, e.pageY);
+  });
 
-    const highlight = target.closest(".custom-highlight") as HTMLElement | null;
-    if (highlight) {
-      activeHighlightId = highlight.id;
-      const rect = highlight.getBoundingClientRect();
-      if (deleteTooltip) {
-        deleteTooltip.style.display = "block";
-        // Position above the span; fall back to below if near the top of viewport
-        const spaceAbove = rect.top;
-        const tooltipHeight = 30; // approximate
-        const top =
-          spaceAbove > tooltipHeight + 8
-            ? window.scrollY + rect.top - tooltipHeight - 6
-            : window.scrollY + rect.bottom + 6;
-        deleteTooltip.style.top = `${String(top)}px`;
-        deleteTooltip.style.left = `${String(window.scrollX + rect.left)}px`;
+  // Hide on outside click, Escape, scroll, resize, or another contextmenu
+  document.addEventListener("click", (e) => {
+    if (!deleteMenu || deleteMenu.style.display === "none") return;
+    const t = e.target as Node | null;
+    if (t && deleteMenu.contains(t)) return;
+    hideDeleteMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideDeleteMenu();
+  });
+  window.addEventListener("scroll", hideDeleteMenu, true);
+  window.addEventListener("resize", hideDeleteMenu);
+  window.addEventListener("blur", hideDeleteMenu);
+}
+
+function showDeleteMenuAt(pageX: number, pageY: number) {
+  if (!deleteMenu) return;
+  // Render off-screen first to measure, then clamp to viewport edges
+  deleteMenu.style.display = "block";
+  deleteMenu.style.top = "-9999px";
+  deleteMenu.style.left = "-9999px";
+
+  const menuRect = deleteMenu.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const margin = 4;
+
+  const clientX = pageX - window.scrollX;
+  const clientY = pageY - window.scrollY;
+
+  const left =
+    clientX + menuRect.width > vw - margin
+      ? Math.max(margin, vw - menuRect.width - margin) + window.scrollX
+      : pageX;
+  const top =
+    clientY + menuRect.height > vh - margin
+      ? Math.max(margin, vh - menuRect.height - margin) + window.scrollY
+      : pageY;
+
+  deleteMenu.style.left = `${String(left)}px`;
+  deleteMenu.style.top = `${String(top)}px`;
+}
+
+function hideDeleteMenu() {
+  if (deleteMenu) deleteMenu.style.display = "none";
+  activeHighlightId = null;
+}
+
+function removeActiveHighlight() {
+  if (!activeHighlightId) return;
+
+  const span = document.getElementById(activeHighlightId);
+  // If the right-clicked span is part of a compound (data-group), nuke the
+  // entire group from the DOM AND remove the single compound storage entry.
+  // This is what fixes "deleting half-page highlight requires sentence-by-
+  // sentence" — one click removes the whole drag-select.
+  const groupId = span?.getAttribute("data-group") ?? null;
+  if (groupId) {
+    const groupSpans = document.querySelectorAll(
+      `.custom-highlight[data-group="${groupId}"]`,
+    );
+    groupSpans.forEach((el) => {
+      const parent = el.parentNode;
+      if (parent) {
+        parent.replaceChild(document.createTextNode(el.textContent ?? ""), el);
       }
-      e.stopPropagation();
-    } else {
-      if (deleteTooltip) deleteTooltip.style.display = "none";
-      activeHighlightId = null;
-    }
-  });
-
-  deleteTooltip.addEventListener("click", () => {
-    if (!activeHighlightId) return;
-
-    const span = document.getElementById(activeHighlightId);
-    if (span?.parentNode) {
-      span.parentNode.replaceChild(
-        document.createTextNode(span.textContent ?? ""),
-        span,
-      );
-      document.body.normalize();
-    }
-
+    });
+    document.body.normalize();
     const pageKey = normalizeUrl(window.location.href);
-    enqueueRemoveHighlight(pageKey, activeHighlightId);
+    enqueueRemoveHighlight(pageKey, groupId);
+    hideDeleteMenu();
+    return;
+  }
 
-    if (deleteTooltip) deleteTooltip.style.display = "none";
-    activeHighlightId = null;
-  });
+  if (span?.parentNode) {
+    span.parentNode.replaceChild(
+      document.createTextNode(span.textContent ?? ""),
+      span,
+    );
+    document.body.normalize();
+  }
+
+  const pageKey = normalizeUrl(window.location.href);
+  enqueueRemoveHighlight(pageKey, activeHighlightId);
+  hideDeleteMenu();
 }
 
 chrome.runtime.onMessage.addListener(
@@ -332,12 +412,9 @@ chrome.runtime.onMessage.addListener(
         highlightsAppliedOnce = false;
         applyHighlightsOnce();
       } else {
-        // Stop creating new highlights and hide the delete tooltip
+        // Stop creating new highlights and hide the delete context menu
         document.removeEventListener("mouseup", handleMouseUp);
-        if (deleteTooltip) {
-          deleteTooltip.style.display = "none";
-          activeHighlightId = null;
-        }
+        hideDeleteMenu();
         // Remove all highlight spans from the DOM
         const highlights = document.querySelectorAll(".custom-highlight");
         highlights.forEach((el) => {
@@ -394,81 +471,82 @@ function gapFillRange(
   color: string,
   baseId: string,
 ): HighlightData[] {
-  const ancestor = range.commonAncestorContainer;
-  const walkRoot =
-    ancestor.nodeType === Node.TEXT_NODE
-      ? ancestor.parentNode!
-      : ancestor;
-  const walker = document.createTreeWalker(walkRoot, NodeFilter.SHOW_TEXT);
+  // Capture the FULL exact text of the selection — character-perfect,
+  // including spacing and punctuation. This is what we'll search for on
+  // reload using a document-wide concatenated-text buffer.
+  const fullText = range.toString();
+  if (!fullText) return [];
 
-  const segments: { node: Text; start: number; end: number }[] = [];
-  let cur: Node | null;
-  while ((cur = walker.nextNode())) {
-    try {
-      if (!range.intersectsNode(cur)) continue;
-    } catch {
-      continue;
-    }
-    const tn = cur as Text;
-    const p = tn.parentNode;
-    if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
-    if (!tn.textContent || !tn.textContent.trim()) continue;
+  // Snapshot endpoints BEFORE any DOM mutation so we can capture
+  // prefix/suffix context that spans element boundaries.
+  const startNode = range.startContainer;
+  const startOff = range.startOffset;
+  const endNode = range.endContainer;
+  const endOff = range.endOffset;
 
-    let sOff = 0;
-    let eOff = tn.length;
-    if (tn === range.startContainer) sOff = range.startOffset;
-    if (tn === range.endContainer) eOff = range.endOffset;
-    if (sOff >= eOff) continue;
-
-    const seg = tn.textContent.substring(sOff, eOff);
-    if (!seg.trim()) continue;
-    segments.push({ node: tn, start: sOff, end: eOff });
-  }
-
-  const entries: HighlightData[] = [];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const { node: tn, start: sOff, end: eOff } = segments[i];
-    const seg = tn.textContent?.substring(sOff, eOff) ?? "";
-    const segId = `${baseId}-s${String(i)}`;
-    const { prefixContext: sp, suffixContext: ss } = captureContext(
-      tn,
-      sOff,
-      seg.length,
+  // captureContextAcross wants a Text node. Walk to the first Text at/after
+  // the boundary for start, and last Text at/before the boundary for end.
+  const firstTextInside = (() => {
+    if (startNode.nodeType === Node.TEXT_NODE)
+      return { node: startNode as Text, off: startOff };
+    // startNode is an element; text at offset `startOff` is child at that index
+    const child = startNode.childNodes[startOff];
+    if (child && child.nodeType === Node.TEXT_NODE)
+      return { node: child as Text, off: 0 };
+    const walker = document.createTreeWalker(
+      startNode,
+      NodeFilter.SHOW_TEXT,
     );
+    const first = walker.nextNode() as Text | null;
+    return first ? { node: first, off: 0 } : null;
+  })();
+  const lastTextInside = (() => {
+    if (endNode.nodeType === Node.TEXT_NODE)
+      return { node: endNode as Text, off: endOff };
+    const prior = endNode.childNodes[endOff - 1];
+    if (prior && prior.nodeType === Node.TEXT_NODE)
+      return { node: prior as Text, off: (prior as Text).length };
+    return null;
+  })();
 
-    const segRange = document.createRange();
-    segRange.setStart(tn, sOff);
-    segRange.setEnd(tn, eOff);
+  const startCtx = firstTextInside
+    ? captureContextAcross(firstTextInside.node, firstTextInside.off, 0)
+    : { prefixContext: "", suffixContext: "" };
+  const endCtx = lastTextInside
+    ? captureContextAcross(lastTextInside.node, lastTextInside.off, 0)
+    : { prefixContext: "", suffixContext: "" };
 
-    const span = document.createElement("span");
-    span.className = "custom-highlight";
-    span.id = segId;
-    span.style.backgroundColor = color;
+  // Wrap every text node in the range and tag them all with data-group=baseId.
+  const wrappedIds = applyGapFillToRange(range, color, baseId);
 
-    try {
-      segRange.surroundContents(span);
-      entries.push({
-        id: segId,
-        text: seg,
-        color,
-        pageIndex: 0,
-        prefixContext: sp,
-        suffixContext: ss,
-      });
-    } catch {
-      // Skip segments that can't be wrapped
-    }
-  }
+  if (wrappedIds.length === 0) return [];
 
-  return entries;
+  // ONE compound entry per drag-select regardless of segment count.
+  const compound: HighlightData = {
+    id: baseId,
+    text: fullText,
+    color,
+    pageIndex: 0,
+    prefixContext: startCtx.prefixContext,
+    suffixContext: endCtx.suffixContext,
+    groupId: baseId,
+    compound: true,
+  };
+  return [compound];
 }
 
 /**
  * Re-applies remainder portions of partially-covered highlights.
  * Returns storage entries for each successfully re-applied remainder.
+ *
+ * Picks the occurrence whose visual position is closest to where the
+ * remainder originally was (captured before unwrap). Without this, the
+ * remainder gets dropped on the first matching occurrence in document
+ * order — which is wrong whenever the remainder text appears multiple
+ * times on the page.
  */
 function applyRemainders(
-  remainders: Array<{ text: string; color: string }>,
+  remainders: Array<{ text: string; color: string; origRect: DOMRect | null }>,
 ): HighlightData[] {
   const entries: HighlightData[] = [];
   for (const rem of remainders) {
@@ -478,7 +556,28 @@ function applyRemainders(
     const remOccurrences = findAllTextOccurrences(normalizedRem);
     if (remOccurrences.length === 0) continue;
 
-    const remOcc = remOccurrences[0];
+    // Pick the occurrence visually closest to the original remainder position
+    let bestIdx = 0;
+    if (rem.origRect && remOccurrences.length > 1) {
+      let bestDist = Infinity;
+      for (let i = 0; i < remOccurrences.length; i++) {
+        const r = document.createRange();
+        r.setStart(remOccurrences[i].node, remOccurrences[i].startOffset);
+        r.setEnd(
+          remOccurrences[i].node,
+          remOccurrences[i].startOffset + remOccurrences[i].text.length,
+        );
+        const rect = r.getBoundingClientRect();
+        const dx = rect.left - rem.origRect.left;
+        const dy = rect.top - rem.origRect.top;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
+      }
+    }
+    const remOcc = remOccurrences[bestIdx];
     const remId = `highlight-${String(Date.now())}-${String(Math.random().toString(36).substring(2, 9))}`;
     const { prefixContext: remPrefix, suffixContext: remSuffix } =
       captureContext(remOcc.node, remOcc.startOffset, remOcc.text.length);
@@ -532,8 +631,13 @@ function addHighlight() {
     selectedText.length > 500 ? selectedText.substring(0, 500) : selectedText;
   const color = highlightColor || getNextHighlightColor();
 
-  // Capture context before any DOM mutations
-  const { prefixContext, suffixContext } = captureContext(
+  // Capture the selection's visual position BEFORE any DOM mutations.
+  // When re-highlighting text already inside a `.custom-highlight` span,
+  // captureContext() can't see useful surrounding text (the span isolates the
+  // chars), so we use visual proximity to relocate to the correct occurrence
+  // after unwrapping.
+  const origRect = range.getBoundingClientRect();
+  let { prefixContext, suffixContext } = captureContext(
     range.startContainer as Text,
     range.startOffset,
     cleanedText.length,
@@ -541,15 +645,28 @@ function addHighlight() {
 
   // Collect IDs of every existing highlight that intersects the selection
   const touchedHighlightIds = new Set<string>();
+  const touchedGroupIds = new Set<string>();
   document.querySelectorAll(".custom-highlight").forEach((span) => {
     try {
       if (span.id && range.intersectsNode(span)) {
         touchedHighlightIds.add(span.id);
+        const g = span.getAttribute("data-group");
+        if (g) touchedGroupIds.add(g);
       }
     } catch {
       /* non-intersectable */
     }
   });
+
+  // Predicate: does this stored entry represent a touched highlight?
+  // Matches simple entries by id AND compound entries by their stored id
+  // (which equals groupId) or explicit groupId field. DOM spans for compound
+  // segments have id = `${groupId}-s${n}` so the stored compound id won't be
+  // in touchedHighlightIds — we must also check touchedGroupIds.
+  const isTouched = (h: HighlightData): boolean =>
+    touchedHighlightIds.has(h.id) ||
+    touchedGroupIds.has(h.id) ||
+    (h.groupId !== undefined && touchedGroupIds.has(h.groupId));
 
   // Skip if fully inside a single existing highlight OF THE SAME COLOR
   if (touchedHighlightIds.size === 1) {
@@ -567,6 +684,11 @@ function addHighlight() {
   interface RemainderInfo {
     text: string;
     color: string;
+    /** Bounding rect captured BEFORE unwrap so we can re-locate the
+     *  exact occurrence after the DOM is mutated. Without this, multiple
+     *  occurrences of the remainder text get disambiguated as "the first
+     *  one in document order" and the highlight jumps elsewhere. */
+    origRect: DOMRect | null;
   }
   const remainders: RemainderInfo[] = [];
 
@@ -595,27 +717,64 @@ function addHighlight() {
       overlapRange.setEnd(range.endContainer, range.endOffset);
       const overlapLen = overlapRange.toString().length;
       const rem = spanText.slice(overlapLen);
-      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+      if (rem.trim()) {
+        // Remainder is the right portion of the span — capture its rect
+        const remRange = document.createRange();
+        remRange.setStart(range.endContainer, range.endOffset);
+        remRange.setEnd(spanRange.endContainer, spanRange.endOffset);
+        remainders.push({ text: rem, color: spanColor, origRect: remRange.getBoundingClientRect() });
+      }
     } else if (!selStartsBeforeSpan && selEndsAfterSpan) {
       const overlapRange = document.createRange();
       overlapRange.setStart(range.startContainer, range.startOffset);
       overlapRange.setEnd(spanRange.endContainer, spanRange.endOffset);
       const overlapLen = overlapRange.toString().length;
       const rem = spanText.slice(0, spanText.length - overlapLen);
-      if (rem.trim()) remainders.push({ text: rem, color: spanColor });
+      if (rem.trim()) {
+        // Remainder is the left portion of the span — capture its rect
+        const remRange = document.createRange();
+        remRange.setStart(spanRange.startContainer, spanRange.startOffset);
+        remRange.setEnd(range.startContainer, range.startOffset);
+        remainders.push({ text: rem, color: spanColor, origRect: remRange.getBoundingClientRect() });
+      }
     } else if (!selStartsBeforeSpan && !selEndsAfterSpan) {
       const prefixRange = document.createRange();
       prefixRange.setStart(spanRange.startContainer, spanRange.startOffset);
       prefixRange.setEnd(range.startContainer, range.startOffset);
       const prefixText = prefixRange.toString();
-      if (prefixText.trim()) remainders.push({ text: prefixText, color: spanColor });
+      if (prefixText.trim()) {
+        remainders.push({ text: prefixText, color: spanColor, origRect: prefixRange.getBoundingClientRect() });
+      }
 
       const suffixRange = document.createRange();
       suffixRange.setStart(range.endContainer, range.endOffset);
       suffixRange.setEnd(spanRange.endContainer, spanRange.endOffset);
       const suffixText = suffixRange.toString();
-      if (suffixText.trim()) remainders.push({ text: suffixText, color: spanColor });
+      if (suffixText.trim()) {
+        remainders.push({ text: suffixText, color: spanColor, origRect: suffixRange.getBoundingClientRect() });
+      }
     }
+  }
+
+  // For every compound group that has ANY segment touched by the selection,
+  // preserve the UNTOUCHED segments as full remainders and mark them for
+  // unwrap. The compound's single storage entry is being removed below
+  // (its id === groupId is in touchedGroupIds), so without this the
+  // untouched portions of the old compound would vanish on reload.
+  for (const gid of touchedGroupIds) {
+    const groupSpans = document.querySelectorAll<HTMLElement>(
+      `.custom-highlight[data-group="${gid}"]`,
+    );
+    groupSpans.forEach((el) => {
+      if (!el.id || touchedHighlightIds.has(el.id)) return;
+      const segText = el.textContent ?? "";
+      if (!segText.trim()) return;
+      const segColor =
+        el.style.backgroundColor || el.getAttribute("data-color") || "";
+      const segRect = el.getBoundingClientRect();
+      remainders.push({ text: segText, color: segColor, origRect: segRect });
+      touchedHighlightIds.add(el.id);
+    });
   }
 
   // --- Step 1: Unwrap any touched highlights so surroundContents won't fail ---
@@ -653,7 +812,7 @@ function addHighlight() {
 
       const pageKey = normalizeUrl(window.location.href);
       const existing = getCachedHighlights(pageKey);
-      const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+      const updated = existing.filter((h) => !isTouched(h));
       for (const entry of gapEntries) updated.push(entry);
       for (const entry of remEntries) updated.push(entry);
 
@@ -661,15 +820,43 @@ function addHighlight() {
       return;
     }
 
-    const bestIdx = resolveOccurrenceIndex(occurrences, {
-      id: "", text: cleanedText, color,
-      prefixContext, suffixContext,
-    });
+    // Pick the occurrence whose visual position is closest to the original
+    // selection. This is the only reliable signal when the selection started
+    // inside an existing highlight span (where prefix/suffix context is
+    // unreliable because the span isolated the text).
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < occurrences.length; i++) {
+      const occRange = document.createRange();
+      occRange.setStart(occurrences[i].node, occurrences[i].startOffset);
+      occRange.setEnd(
+        occurrences[i].node,
+        occurrences[i].startOffset + occurrences[i].text.length,
+      );
+      const r = occRange.getBoundingClientRect();
+      const dx = r.left - origRect.left;
+      const dy = r.top - origRect.top;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
     const best = occurrences[bestIdx];
 
     range = document.createRange();
     range.setStart(best.node, best.startOffset);
     range.setEnd(best.node, best.startOffset + best.text.length);
+
+    // Re-capture context from the clean text node so it's accurate for
+    // future reloads.
+    const recaptured = captureContext(
+      best.node,
+      best.startOffset,
+      best.text.length,
+    );
+    prefixContext = recaptured.prefixContext;
+    suffixContext = recaptured.suffixContext;
   }
 
   // --- Step 3: Apply highlight via surroundContents (safe, no extractContents) ---
@@ -688,7 +875,7 @@ function addHighlight() {
 
     const pageKey = normalizeUrl(window.location.href);
     const existing = getCachedHighlights(pageKey);
-    const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+    const updated = existing.filter((h) => !isTouched(h));
     for (const entry of gapEntries) updated.push(entry);
     for (const entry of remEntries2) updated.push(entry);
     enqueuePersistHighlights(pageKey, updated);
@@ -710,7 +897,7 @@ function addHighlight() {
 
   const pageKey = normalizeUrl(window.location.href);
   const existing = getCachedHighlights(pageKey);
-  const updated = existing.filter((h) => !touchedHighlightIds.has(h.id));
+  const updated = existing.filter((h) => !isTouched(h));
   updated.push(highlightData);
   for (const rem of remainderEntries) {
     updated.push(rem);
