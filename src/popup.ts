@@ -169,7 +169,7 @@ document.addEventListener("DOMContentLoaded", () => {
         colorPicker.click();
         e.stopPropagation();
       } else {
-        const color = swatch.dataset.color ?? "#ffff00";
+        const color = swatch.dataset.color ?? "#FFF4B3";
         updateSelectedColor(color);
       }
     });
@@ -208,7 +208,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const extensionEnabled = syncData.enabled === true;
       updateHighlightSectionState(extensionEnabled);
 
-      const savedColor = localData.highlightColor ?? "#ffff00";
+      const savedColor = localData.highlightColor ?? "#FFF4B3";
       colorPicker.value = savedColor;
       updateSelectedColor(savedColor);
     } catch (err) {

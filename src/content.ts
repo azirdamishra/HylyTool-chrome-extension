@@ -75,7 +75,7 @@ const observer = new MutationObserver((mutations) => {
 });
 
 let enabled = false;
-let highlightColor = "#FFFF00";
+let highlightColor = "#FFF4B3";
 const keys: ("enabled" | "item")[] = ["enabled", "item"];
 let initComplete = false;
 let cachedPageKey: string | null = null;
@@ -909,11 +909,11 @@ function addHighlight() {
 // Helper function to get the next color from the rotation
 function getNextHighlightColor(): string {
   const highlightColors = [
-    "#FFFF00", // Yellow
-    "#7FFFD4", // Aquamarine
-    "#FF69B4", // Hot Pink
-    "#FFA500", // Orange
-    "#00FFFF", // Cyan
+    "#FFF4B3", // Butter Yellow
+    "#FFD1DC", // Cotton Candy Pink
+    "#B5EAD7", // Mint
+    "#C7CEEA", // Periwinkle
+    "#FFDAC1", // Peach
   ];
 
   // Get the current index from storage or use 0 as default
