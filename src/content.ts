@@ -129,6 +129,24 @@ function enqueueRemoveHighlight(pageKey: string, highlightId: string): void {
 
 console.log("Content script initialized");
 
+// Inject a stylesheet once so highlights with notes show a small badge.
+// This runs at content-script load time, before any highlight is applied.
+(function injectNoteStyles() {
+  const styleEl = document.createElement("style");
+  styleEl.textContent = `
+    .custom-highlight[data-has-note="true"]::after {
+      content: "\u{1F4DD}";
+      font-size: 0.75em;
+      margin-left: 2px;
+      vertical-align: super;
+      cursor: help;
+      user-select: none;
+      pointer-events: none;
+    }
+  `;
+  (document.head ?? document.documentElement).appendChild(styleEl);
+})();
+
 //Only start observing the DOM if the extension is enabled and there is text to blur
 function observe() {
   if (enabled && textToBlur.trim().length > 0) {
@@ -225,9 +243,15 @@ function applyHighlightsOnce(): void {
     setHighlightCache(pageKey, highlights);
     console.log("Found highlights:", highlights);
     reapplyHighlightsFromStorage(highlights);
+    // Re-apply note indicators for every entry that has a note.
+    for (const h of highlights) {
+      if (h.note) {
+        applyNoteToSpans(h.groupId ?? h.id, h.note);
+      }
+    }
   });
 
-  setupDeleteContextMenu();
+  setupHighlightContextMenu();
 }
 
 window.addEventListener("load", () => {
@@ -237,7 +261,7 @@ window.addEventListener("load", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete via right-click context menu
+// Right-click context menu for highlights (delete + add/edit note)
 //
 // A small custom menu is shown only when the user right-clicks on a
 // `.custom-highlight` span. This lets normal left-clicks fall through to any
@@ -246,13 +270,280 @@ window.addEventListener("load", () => {
 // ---------------------------------------------------------------------------
 
 let activeHighlightId: string | null = null;
-let deleteMenu: HTMLElement | null = null;
+// The resolved storage id for the active highlight (groupId for compounds,
+// span.id for simple). Used by both delete and note operations.
+let activeStorageId: string | null = null;
+let contextMenu: HTMLElement | null = null;
+let noteMenuItem: HTMLElement | null = null;
+let deleteNoteMenuItem: HTMLElement | null = null;
+// Coordinates where the context menu was triggered — used to position the
+// note editor at the same spot.
+let menuPageX = 0;
+let menuPageY = 0;
 
-function setupDeleteContextMenu() {
-  if (deleteMenu) return; // guard against double-init
+// ---------------------------------------------------------------------------
+// Note indicator helpers
+// ---------------------------------------------------------------------------
 
-  deleteMenu = document.createElement("div");
-  Object.assign(deleteMenu.style, {
+/**
+ * Applies or removes the note indicator and tooltip from the DOM spans that
+ * belong to a given storage entry.
+ *
+ * - For compound highlights all spans sharing `data-group=storageId` are
+ *   updated; the badge (`data-has-note`) lives only on the last span.
+ * - For simple highlights the single span with `id=storageId` is updated.
+ */
+function applyNoteToSpans(storageId: string, note: string | undefined): void {
+  const hasNote = typeof note === "string" && note.trim().length > 0;
+
+  // Collect all spans for this storage entry (group or simple).
+  const groupSpans = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      `.custom-highlight[data-group="${storageId}"]`,
+    ),
+  );
+  const simpleSpan = document.getElementById(storageId) as HTMLElement | null;
+
+  const spans: HTMLElement[] =
+    groupSpans.length > 0
+      ? groupSpans
+      : simpleSpan
+        ? [simpleSpan]
+        : [];
+
+  if (spans.length === 0) return;
+
+  // Update title (native tooltip) on every span so the user can hover anywhere
+  // over a multi-segment compound and still see the note.
+  for (const span of spans) {
+    if (hasNote && note) {
+      span.title = note;
+    } else {
+      span.removeAttribute("title");
+    }
+    // Clear badge from all — we'll set it on the last one below.
+    span.removeAttribute("data-has-note");
+  }
+
+  // Place the badge on the last span so it appears at the end of the highlight.
+  const badgeSpan = spans[spans.length - 1];
+  if (hasNote) {
+    badgeSpan.setAttribute("data-has-note", "true");
+  }
+  // #region agent log
+  try {
+    const pseudo = window.getComputedStyle(badgeSpan, "::after");
+    const parent = badgeSpan.parentNode as Element | null;
+    const surroundingHTML = parent ? (parent as HTMLElement).innerHTML.slice(0, 400) : "";
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'note-save',hypothesisId:'H1',location:'content.ts:applyNoteToSpans-after',message:'post-save DOM snapshot',data:{hasNote,storageId,afterContent:pseudo.content,badgeOuterHTML:badgeSpan.outerHTML.slice(0,300),badgeTitle:badgeSpan.getAttribute("title")?.slice(0,80),badgeTextContent:badgeSpan.textContent?.slice(0,80),surroundingHTML,injectedCSSSnippet:document.querySelector("style")?.textContent?.slice(0,260)},timestamp:Date.now()})}).catch(()=>{});
+  } catch {}
+  // #endregion
+}
+
+// ---------------------------------------------------------------------------
+// Note editor
+// ---------------------------------------------------------------------------
+
+let noteEditor: HTMLElement | null = null;
+let noteTextarea: HTMLTextAreaElement | null = null;
+
+function buildNoteEditor(): void {
+  if (noteEditor) return;
+
+  noteEditor = document.createElement("div");
+  Object.assign(noteEditor.style, {
+    position: "absolute",
+    background: "#ffffff",
+    color: "#222",
+    border: "1px solid rgba(0,0,0,0.12)",
+    borderRadius: "8px",
+    padding: "10px",
+    fontSize: "13px",
+    fontFamily:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    zIndex: "2147483647",
+    display: "none",
+    boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+    minWidth: "220px",
+    maxWidth: "320px",
+  });
+
+  noteTextarea = document.createElement("textarea");
+  Object.assign(noteTextarea.style, {
+    width: "100%",
+    minHeight: "80px",
+    resize: "vertical",
+    border: "1px solid rgba(0,0,0,0.15)",
+    borderRadius: "4px",
+    padding: "6px",
+    fontSize: "13px",
+    fontFamily: "inherit",
+    boxSizing: "border-box",
+    outline: "none",
+    color: "#222",
+    background: "#fafafa",
+    display: "block",
+    marginBottom: "8px",
+  });
+  noteTextarea.placeholder = "Add a note…";
+  noteTextarea.setAttribute("rows", "4");
+
+  const btnRow = document.createElement("div");
+  Object.assign(btnRow.style, {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "6px",
+  });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  Object.assign(cancelBtn.style, {
+    padding: "4px 12px",
+    fontSize: "12px",
+    borderRadius: "4px",
+    border: "1px solid rgba(0,0,0,0.15)",
+    background: "#f0f0f0",
+    cursor: "pointer",
+    color: "#444",
+  });
+  cancelBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    hideNoteEditor();
+  });
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Save";
+  Object.assign(saveBtn.style, {
+    padding: "4px 12px",
+    fontSize: "12px",
+    borderRadius: "4px",
+    border: "none",
+    background: "#4f46e5",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: "600",
+  });
+  saveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    saveActiveNote();
+  });
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(saveBtn);
+
+  noteEditor.appendChild(noteTextarea);
+  noteEditor.appendChild(btnRow);
+  document.body.appendChild(noteEditor);
+
+  // Keyboard shortcuts inside the editor
+  noteEditor.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      hideNoteEditor();
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.stopPropagation();
+      saveActiveNote();
+    }
+  });
+
+  // Outside click dismissal
+  document.addEventListener("click", (e) => {
+    if (!noteEditor || noteEditor.style.display === "none") return;
+    const t = e.target as Node | null;
+    if (t && noteEditor.contains(t)) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H3',location:'content.ts:noteEditor.outsideClick',message:'outside click hiding editor',data:{targetTag:(t as Element|null)?.tagName,display:noteEditor.style.display},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    hideNoteEditor();
+  });
+  window.addEventListener("scroll", hideNoteEditor, true);
+  window.addEventListener("resize", hideNoteEditor);
+  window.addEventListener("blur", hideNoteEditor);
+}
+
+function showNoteEditorAt(pageX: number, pageY: number, existingNote: string): void {
+  // #region agent log
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H2',location:'content.ts:showNoteEditorAt-entry',message:'showNoteEditorAt called',data:{pageX,pageY,existingNoteLen:existingNote.length},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  buildNoteEditor();
+  if (!noteEditor || !noteTextarea) return;
+
+  noteTextarea.value = existingNote;
+
+  // Render off-screen first to measure, then clamp to viewport
+  noteEditor.style.display = "block";
+  noteEditor.style.top = "-9999px";
+  noteEditor.style.left = "-9999px";
+
+  const rect = noteEditor.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const margin = 8;
+
+  const clientX = pageX - window.scrollX;
+  const clientY = pageY - window.scrollY;
+
+  const left =
+    clientX + rect.width > vw - margin
+      ? Math.max(margin, vw - rect.width - margin) + window.scrollX
+      : pageX;
+  const top =
+    clientY + rect.height > vh - margin
+      ? Math.max(margin, vh - rect.height - margin) + window.scrollY
+      : pageY;
+
+  noteEditor.style.left = `${String(left)}px`;
+  noteEditor.style.top = `${String(top)}px`;
+
+  // Focus and move cursor to end
+  noteTextarea.focus();
+  const len = noteTextarea.value.length;
+  noteTextarea.setSelectionRange(len, len);
+
+  // #region agent log
+  const finalRect = noteEditor.getBoundingClientRect();
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H2',location:'content.ts:showNoteEditorAt-rendered',message:'editor rendered',data:{left,top,rect:{x:finalRect.x,y:finalRect.y,w:finalRect.width,h:finalRect.height},display:noteEditor.style.display,zIndex:noteEditor.style.zIndex,activeElementTag:document.activeElement?.tagName},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+}
+
+function hideNoteEditor(): void {
+  if (noteEditor) noteEditor.style.display = "none";
+}
+
+function saveActiveNote(): void {
+  // #region agent log
+  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H5',location:'content.ts:saveActiveNote-entry',message:'saveActiveNote called',data:{activeStorageId,hasTextarea:!!noteTextarea,noteValueLen:noteTextarea?.value.length??-1},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  if (!activeStorageId || !noteTextarea) return;
+
+  const newNote = noteTextarea.value.trim();
+  const pageKey = normalizeUrl(window.location.href);
+  const existing = getCachedHighlights(pageKey);
+  const updated = existing.map((h) => {
+    if (h.id !== activeStorageId) return h;
+    if (newNote.length === 0) {
+      const copy = { ...h };
+      delete copy.note;
+      return copy;
+    }
+    return { ...h, note: newNote };
+  });
+
+  enqueuePersistHighlights(pageKey, updated);
+  applyNoteToSpans(activeStorageId, newNote.length > 0 ? newNote : undefined);
+  hideNoteEditor();
+}
+
+// ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+function setupHighlightContextMenu() {
+  if (contextMenu) return; // guard against double-init
+
+  contextMenu = document.createElement("div");
+  Object.assign(contextMenu.style, {
     position: "absolute",
     background: "#ffffff",
     color: "#222",
@@ -270,6 +561,7 @@ function setupDeleteContextMenu() {
     minWidth: "150px",
   });
 
+  // --- Remove highlight ---
   const removeItem = document.createElement("div");
   removeItem.textContent = "Remove highlight";
   Object.assign(removeItem.style, {
@@ -288,50 +580,139 @@ function setupDeleteContextMenu() {
     removeActiveHighlight();
   });
 
-  deleteMenu.appendChild(removeItem);
-  document.body.appendChild(deleteMenu);
+  // --- Add / Edit note ---
+  noteMenuItem = document.createElement("div");
+  noteMenuItem.textContent = "Add note";
+  Object.assign(noteMenuItem.style, {
+    padding: "6px 14px",
+    cursor: "pointer",
+    color: "#222",
+  });
+  noteMenuItem.addEventListener("mouseenter", () => {
+    if (noteMenuItem) noteMenuItem.style.background = "#f0f0f0";
+  });
+  noteMenuItem.addEventListener("mouseleave", () => {
+    if (noteMenuItem) noteMenuItem.style.background = "";
+  });
+  noteMenuItem.addEventListener("click", (e) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'post-fix',hypothesisId:'H1',location:'content.ts:noteMenuItem.click-entry',message:'note menu click: before hideContextMenu',data:{activeStorageId,activeHighlightId,menuPageX,menuPageY},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    e.stopPropagation();
+    // Capture the target id BEFORE hideContextMenu() — hideContextMenu nulls
+    // activeStorageId/activeHighlightId, and saveActiveNote needs them later.
+    const targetStorageId = activeStorageId;
+    const savedPageX = menuPageX;
+    const savedPageY = menuPageY;
+    hideContextMenu();
+    // Restore activeStorageId so saveActiveNote can resolve the target entry.
+    activeStorageId = targetStorageId;
+    // #region agent log
+    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'post-fix',hypothesisId:'H1',location:'content.ts:noteMenuItem.click-after-hide',message:'note menu click: after hideContextMenu',data:{activeStorageIdAfterHide:activeStorageId,targetStorageId,willReturnEarly:!activeStorageId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (!activeStorageId) return;
+    const pageKey = normalizeUrl(window.location.href);
+    const highlights = getCachedHighlights(pageKey);
+    const entry = highlights.find((h) => h.id === activeStorageId);
+    showNoteEditorAt(savedPageX, savedPageY, entry?.note ?? "");
+  });
+
+  // --- Delete note (only shown when the target highlight has a note) ---
+  deleteNoteMenuItem = document.createElement("div");
+  deleteNoteMenuItem.textContent = "Delete note";
+  Object.assign(deleteNoteMenuItem.style, {
+    padding: "6px 14px",
+    cursor: "pointer",
+    color: "#c00",
+    display: "none",
+  });
+  deleteNoteMenuItem.addEventListener("mouseenter", () => {
+    if (deleteNoteMenuItem) deleteNoteMenuItem.style.background = "#fdecea";
+  });
+  deleteNoteMenuItem.addEventListener("mouseleave", () => {
+    if (deleteNoteMenuItem) deleteNoteMenuItem.style.background = "";
+  });
+  deleteNoteMenuItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const targetStorageId = activeStorageId;
+    hideContextMenu();
+    if (!targetStorageId) return;
+    const pageKey = normalizeUrl(window.location.href);
+    const existing = getCachedHighlights(pageKey);
+    const updated = existing.map((h) => {
+      if (h.id !== targetStorageId) return h;
+      const copy = { ...h };
+      delete copy.note;
+      return copy;
+    });
+    enqueuePersistHighlights(pageKey, updated);
+    applyNoteToSpans(targetStorageId, undefined);
+  });
+
+  contextMenu.appendChild(removeItem);
+  contextMenu.appendChild(noteMenuItem);
+  contextMenu.appendChild(deleteNoteMenuItem);
+  document.body.appendChild(contextMenu);
 
   // Show on right-click over a highlight
   document.addEventListener("contextmenu", (e) => {
     if (!enabled) {
-      hideDeleteMenu();
+      hideContextMenu();
       return;
     }
     const target = e.target as Element | null;
     const highlight =
       target?.closest?.(".custom-highlight") as HTMLElement | null;
     if (!highlight?.id) {
-      hideDeleteMenu();
+      hideContextMenu();
       return;
     }
     e.preventDefault();
     activeHighlightId = highlight.id;
-    showDeleteMenuAt(e.pageX, e.pageY);
+    // Resolve the canonical storage id: groupId takes priority for compounds.
+    activeStorageId = highlight.getAttribute("data-group") ?? highlight.id;
+    menuPageX = e.pageX;
+    menuPageY = e.pageY;
+
+    // Set note menu label dynamically based on whether a note already exists.
+    const pageKey = normalizeUrl(window.location.href);
+    const highlights = getCachedHighlights(pageKey);
+    const entry = highlights.find((h) => h.id === activeStorageId);
+    const hasNoteOnTarget =
+      !!entry?.note && entry.note.trim().length > 0;
+    if (noteMenuItem) {
+      noteMenuItem.textContent = hasNoteOnTarget ? "Edit note" : "Add note";
+    }
+    if (deleteNoteMenuItem) {
+      deleteNoteMenuItem.style.display = hasNoteOnTarget ? "block" : "none";
+    }
+
+    showContextMenuAt(e.pageX, e.pageY);
   });
 
-  // Hide on outside click, Escape, scroll, resize, or another contextmenu
+  // Hide on outside click, Escape, scroll, resize
   document.addEventListener("click", (e) => {
-    if (!deleteMenu || deleteMenu.style.display === "none") return;
+    if (!contextMenu || contextMenu.style.display === "none") return;
     const t = e.target as Node | null;
-    if (t && deleteMenu.contains(t)) return;
-    hideDeleteMenu();
+    if (t && contextMenu.contains(t)) return;
+    hideContextMenu();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") hideDeleteMenu();
+    if (e.key === "Escape") hideContextMenu();
   });
-  window.addEventListener("scroll", hideDeleteMenu, true);
-  window.addEventListener("resize", hideDeleteMenu);
-  window.addEventListener("blur", hideDeleteMenu);
+  window.addEventListener("scroll", hideContextMenu, true);
+  window.addEventListener("resize", hideContextMenu);
+  window.addEventListener("blur", hideContextMenu);
 }
 
-function showDeleteMenuAt(pageX: number, pageY: number) {
-  if (!deleteMenu) return;
+function showContextMenuAt(pageX: number, pageY: number) {
+  if (!contextMenu) return;
   // Render off-screen first to measure, then clamp to viewport edges
-  deleteMenu.style.display = "block";
-  deleteMenu.style.top = "-9999px";
-  deleteMenu.style.left = "-9999px";
+  contextMenu.style.display = "block";
+  contextMenu.style.top = "-9999px";
+  contextMenu.style.left = "-9999px";
 
-  const menuRect = deleteMenu.getBoundingClientRect();
+  const menuRect = contextMenu.getBoundingClientRect();
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const margin = 4;
@@ -348,13 +729,14 @@ function showDeleteMenuAt(pageX: number, pageY: number) {
       ? Math.max(margin, vh - menuRect.height - margin) + window.scrollY
       : pageY;
 
-  deleteMenu.style.left = `${String(left)}px`;
-  deleteMenu.style.top = `${String(top)}px`;
+  contextMenu.style.left = `${String(left)}px`;
+  contextMenu.style.top = `${String(top)}px`;
 }
 
-function hideDeleteMenu() {
-  if (deleteMenu) deleteMenu.style.display = "none";
+function hideContextMenu() {
+  if (contextMenu) contextMenu.style.display = "none";
   activeHighlightId = null;
+  activeStorageId = null;
 }
 
 function removeActiveHighlight() {
@@ -379,7 +761,7 @@ function removeActiveHighlight() {
     document.body.normalize();
     const pageKey = normalizeUrl(window.location.href);
     enqueueRemoveHighlight(pageKey, groupId);
-    hideDeleteMenu();
+    hideContextMenu();
     return;
   }
 
@@ -393,7 +775,7 @@ function removeActiveHighlight() {
 
   const pageKey = normalizeUrl(window.location.href);
   enqueueRemoveHighlight(pageKey, activeHighlightId);
-  hideDeleteMenu();
+  hideContextMenu();
 }
 
 chrome.runtime.onMessage.addListener(
@@ -412,9 +794,10 @@ chrome.runtime.onMessage.addListener(
         highlightsAppliedOnce = false;
         applyHighlightsOnce();
       } else {
-        // Stop creating new highlights and hide the delete context menu
+        // Stop creating new highlights and hide the context menu + note editor
         document.removeEventListener("mouseup", handleMouseUp);
-        hideDeleteMenu();
+        hideContextMenu();
+        hideNoteEditor();
         // Remove all highlight spans from the DOM
         const highlights = document.querySelectorAll(".custom-highlight");
         highlights.forEach((el) => {
@@ -668,6 +1051,18 @@ function addHighlight() {
     touchedGroupIds.has(h.id) ||
     (h.groupId !== undefined && touchedGroupIds.has(h.groupId));
 
+  // Preserve any note from touched entries so that re-highlighting the same
+  // text (or a different color over it) does NOT silently drop the note.
+  // If multiple touched entries have notes, the first one wins — acceptable
+  // for the common case of overlapping a single noted highlight.
+  const preservedPageKey = normalizeUrl(window.location.href);
+  const cachedForNote = getCachedHighlights(preservedPageKey);
+  const touchedNote = cachedForNote.find(
+    (h) => isTouched(h) && typeof h.note === "string" && h.note.trim().length > 0,
+  )?.note;
+  const withNote = <T extends HighlightData>(entry: T): T =>
+    touchedNote ? { ...entry, note: touchedNote } : entry;
+
   // Skip if fully inside a single existing highlight OF THE SAME COLOR
   if (touchedHighlightIds.size === 1) {
     const onlyId = [...touchedHighlightIds][0];
@@ -813,10 +1208,19 @@ function addHighlight() {
       const pageKey = normalizeUrl(window.location.href);
       const existing = getCachedHighlights(pageKey);
       const updated = existing.filter((h) => !isTouched(h));
-      for (const entry of gapEntries) updated.push(entry);
-      for (const entry of remEntries) updated.push(entry);
+      for (const entry of gapEntries) updated.push(withNote(entry));
+      for (const entry of remEntries) updated.push(withNote(entry));
 
       enqueuePersistHighlights(pageKey, updated);
+      // Re-apply the preserved note to the freshly-wrapped DOM spans.
+      if (touchedNote) {
+        for (const entry of gapEntries) {
+          applyNoteToSpans(entry.groupId ?? entry.id, touchedNote);
+        }
+        for (const entry of remEntries) {
+          applyNoteToSpans(entry.groupId ?? entry.id, touchedNote);
+        }
+      }
       return;
     }
 
@@ -876,9 +1280,17 @@ function addHighlight() {
     const pageKey = normalizeUrl(window.location.href);
     const existing = getCachedHighlights(pageKey);
     const updated = existing.filter((h) => !isTouched(h));
-    for (const entry of gapEntries) updated.push(entry);
-    for (const entry of remEntries2) updated.push(entry);
+    for (const entry of gapEntries) updated.push(withNote(entry));
+    for (const entry of remEntries2) updated.push(withNote(entry));
     enqueuePersistHighlights(pageKey, updated);
+    if (touchedNote) {
+      for (const entry of gapEntries) {
+        applyNoteToSpans(entry.groupId ?? entry.id, touchedNote);
+      }
+      for (const entry of remEntries2) {
+        applyNoteToSpans(entry.groupId ?? entry.id, touchedNote);
+      }
+    }
     return;
   }
 
@@ -898,12 +1310,21 @@ function addHighlight() {
   const pageKey = normalizeUrl(window.location.href);
   const existing = getCachedHighlights(pageKey);
   const updated = existing.filter((h) => !isTouched(h));
-  updated.push(highlightData);
+  const newMain = withNote(highlightData);
+  updated.push(newMain);
   for (const rem of remainderEntries) {
-    updated.push(rem);
+    updated.push(withNote(rem));
   }
 
   enqueuePersistHighlights(pageKey, updated);
+  // Re-apply the preserved note to the new spans so the visible badge +
+  // tooltip show up immediately without needing a reload.
+  if (touchedNote) {
+    applyNoteToSpans(newMain.groupId ?? newMain.id, touchedNote);
+    for (const rem of remainderEntries) {
+      applyNoteToSpans(rem.groupId ?? rem.id, touchedNote);
+    }
+  }
 }
 
 // Helper function to get the next color from the rotation

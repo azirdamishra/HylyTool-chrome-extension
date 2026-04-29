@@ -28,6 +28,8 @@ export interface HighlightData {
    */
   groupId?: string;
   compound?: boolean;
+  /** Optional plain-text note attached by the user. Undefined means no note. */
+  note?: string;
 }
 
 // ---------------------------------------------------------------------------
