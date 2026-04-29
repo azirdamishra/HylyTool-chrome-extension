@@ -201,15 +201,39 @@ chrome.storage.sync.get(keys, (data: { enabled?: boolean; item?: string }) => {
 });
 
 // Handle mouseup event for highlighting
+// Returns true when a node lives inside one of our floating UI elements
+// (note viewer, note editor, or right-click context menu). Used to ignore
+// text selections inside our own popups so they don't get treated as a
+// request to highlight page content.
+function isInsideHylytoolUI(node: Node | null): boolean {
+  if (!node) return false;
+  if (noteViewer && noteViewer.contains(node)) return true;
+  if (noteEditor && noteEditor.contains(node)) return true;
+  if (contextMenu && contextMenu.contains(node)) return true;
+  return false;
+}
+
 function handleMouseUp() {
   if (!enabled) return;
   if (!chrome.runtime?.id) return;
 
   const selection = window.getSelection();
-  if (selection?.toString()) {
-    console.log("Selection made:", selection.toString());
-    addHighlight();
+  if (!selection?.toString()) return;
+
+  // Skip when the selection is anchored inside one of our floating popups
+  // (read-only viewer, note editor, context menu). Without this, selecting
+  // text inside the note viewer would trigger addHighlight() against the
+  // viewer's DOM — creating a stray span + bogus storage entry that
+  // disappears as soon as the viewer is hidden.
+  if (
+    isInsideHylytoolUI(selection.anchorNode) ||
+    isInsideHylytoolUI(selection.focusNode)
+  ) {
+    return;
   }
+
+  console.log("Selection made:", selection.toString());
+  addHighlight();
 }
 
 // React to highlight color changes from the popup
@@ -330,14 +354,6 @@ function applyNoteToSpans(storageId: string, note: string | undefined): void {
   if (hasNote) {
     badgeSpan.setAttribute("data-has-note", "true");
   }
-  // #region agent log
-  try {
-    const pseudo = window.getComputedStyle(badgeSpan, "::after");
-    const parent = badgeSpan.parentNode as Element | null;
-    const surroundingHTML = parent ? (parent as HTMLElement).innerHTML.slice(0, 400) : "";
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'note-save',hypothesisId:'H1',location:'content.ts:applyNoteToSpans-after',message:'post-save DOM snapshot',data:{hasNote,storageId,afterContent:pseudo.content,badgeOuterHTML:badgeSpan.outerHTML.slice(0,300),badgeTitle:badgeSpan.getAttribute("title")?.slice(0,80),badgeTextContent:badgeSpan.textContent?.slice(0,80),surroundingHTML,injectedCSSSnippet:document.querySelector("style")?.textContent?.slice(0,260)},timestamp:Date.now()})}).catch(()=>{});
-  } catch {}
-  // #endregion
 }
 
 // ---------------------------------------------------------------------------
@@ -452,9 +468,6 @@ function buildNoteEditor(): void {
     if (!noteEditor || noteEditor.style.display === "none") return;
     const t = e.target as Node | null;
     if (t && noteEditor.contains(t)) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H3',location:'content.ts:noteEditor.outsideClick',message:'outside click hiding editor',data:{targetTag:(t as Element|null)?.tagName,display:noteEditor.style.display},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     hideNoteEditor();
   });
   window.addEventListener("scroll", hideNoteEditor, true);
@@ -463,9 +476,6 @@ function buildNoteEditor(): void {
 }
 
 function showNoteEditorAt(pageX: number, pageY: number, existingNote: string): void {
-  // #region agent log
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H2',location:'content.ts:showNoteEditorAt-entry',message:'showNoteEditorAt called',data:{pageX,pageY,existingNoteLen:existingNote.length},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   buildNoteEditor();
   if (!noteEditor || !noteTextarea) return;
 
@@ -500,21 +510,134 @@ function showNoteEditorAt(pageX: number, pageY: number, existingNote: string): v
   noteTextarea.focus();
   const len = noteTextarea.value.length;
   noteTextarea.setSelectionRange(len, len);
-
-  // #region agent log
-  const finalRect = noteEditor.getBoundingClientRect();
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H2',location:'content.ts:showNoteEditorAt-rendered',message:'editor rendered',data:{left,top,rect:{x:finalRect.x,y:finalRect.y,w:finalRect.width,h:finalRect.height},display:noteEditor.style.display,zIndex:noteEditor.style.zIndex,activeElementTag:document.activeElement?.tagName},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 }
 
 function hideNoteEditor(): void {
   if (noteEditor) noteEditor.style.display = "none";
 }
 
+// ---------------------------------------------------------------------------
+// Read-only note viewer
+//
+// Left-clicking a highlight that has a note opens this small popup with the
+// note text in read-only mode. Editing/deleting still requires right-click
+// → "Edit note" / "Delete note". Clicks on interactive descendants (links,
+// buttons) inside a highlight are NOT intercepted so existing link-following
+// behaviour is preserved.
+// ---------------------------------------------------------------------------
+
+let noteViewer: HTMLElement | null = null;
+let noteViewerBody: HTMLElement | null = null;
+let noteViewerDismissHandler: ((e: MouseEvent) => void) | null = null;
+
+function buildNoteViewer(): void {
+  if (noteViewer) return;
+
+  noteViewer = document.createElement("div");
+  Object.assign(noteViewer.style, {
+    position: "absolute",
+    background: "#ffffff",
+    color: "#222",
+    border: "1px solid rgba(0,0,0,0.12)",
+    borderRadius: "8px",
+    padding: "10px 12px",
+    fontSize: "13px",
+    fontFamily:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    zIndex: "2147483647",
+    display: "none",
+    boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+    minWidth: "200px",
+    maxWidth: "320px",
+  });
+
+  noteViewerBody = document.createElement("div");
+  Object.assign(noteViewerBody.style, {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    color: "#222",
+    lineHeight: "1.4",
+  });
+  noteViewer.appendChild(noteViewerBody);
+
+  const hint = document.createElement("div");
+  hint.textContent = "Right-click highlight to edit";
+  Object.assign(hint.style, {
+    marginTop: "8px",
+    fontSize: "11px",
+    color: "#888",
+    fontStyle: "italic",
+    userSelect: "none",
+  });
+  noteViewer.appendChild(hint);
+
+  document.body.appendChild(noteViewer);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideNoteViewer();
+  });
+  window.addEventListener("scroll", hideNoteViewer, true);
+  window.addEventListener("resize", hideNoteViewer);
+  window.addEventListener("blur", hideNoteViewer);
+}
+
+function showNoteViewerAt(pageX: number, pageY: number, note: string): void {
+  buildNoteViewer();
+  if (!noteViewer || !noteViewerBody) return;
+
+  noteViewerBody.textContent = note;
+
+  // Render off-screen first to measure, then clamp to viewport
+  noteViewer.style.display = "block";
+  noteViewer.style.top = "-9999px";
+  noteViewer.style.left = "-9999px";
+
+  const rect = noteViewer.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const margin = 8;
+
+  const clientX = pageX - window.scrollX;
+  const clientY = pageY - window.scrollY;
+
+  const left =
+    clientX + rect.width > vw - margin
+      ? Math.max(margin, vw - rect.width - margin) + window.scrollX
+      : pageX;
+  const top =
+    clientY + rect.height > vh - margin
+      ? Math.max(margin, vh - rect.height - margin) + window.scrollY
+      : pageY;
+
+  noteViewer.style.left = `${String(left)}px`;
+  noteViewer.style.top = `${String(top)}px`;
+
+  // Defer attaching the outside-click dismiss listener so the same click that
+  // opened the viewer doesn't immediately close it.
+  if (noteViewerDismissHandler) {
+    document.removeEventListener("click", noteViewerDismissHandler);
+    noteViewerDismissHandler = null;
+  }
+  setTimeout(() => {
+    noteViewerDismissHandler = (e: MouseEvent) => {
+      if (!noteViewer) return;
+      const t = e.target as Node | null;
+      if (t && noteViewer.contains(t)) return;
+      hideNoteViewer();
+    };
+    document.addEventListener("click", noteViewerDismissHandler);
+  }, 0);
+}
+
+function hideNoteViewer(): void {
+  if (noteViewer) noteViewer.style.display = "none";
+  if (noteViewerDismissHandler) {
+    document.removeEventListener("click", noteViewerDismissHandler);
+    noteViewerDismissHandler = null;
+  }
+}
+
 function saveActiveNote(): void {
-  // #region agent log
-  fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',hypothesisId:'H5',location:'content.ts:saveActiveNote-entry',message:'saveActiveNote called',data:{activeStorageId,hasTextarea:!!noteTextarea,noteValueLen:noteTextarea?.value.length??-1},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (!activeStorageId || !noteTextarea) return;
 
   const newNote = noteTextarea.value.trim();
@@ -595,9 +718,6 @@ function setupHighlightContextMenu() {
     if (noteMenuItem) noteMenuItem.style.background = "";
   });
   noteMenuItem.addEventListener("click", (e) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'post-fix',hypothesisId:'H1',location:'content.ts:noteMenuItem.click-entry',message:'note menu click: before hideContextMenu',data:{activeStorageId,activeHighlightId,menuPageX,menuPageY},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     e.stopPropagation();
     // Capture the target id BEFORE hideContextMenu() — hideContextMenu nulls
     // activeStorageId/activeHighlightId, and saveActiveNote needs them later.
@@ -607,9 +727,6 @@ function setupHighlightContextMenu() {
     hideContextMenu();
     // Restore activeStorageId so saveActiveNote can resolve the target entry.
     activeStorageId = targetStorageId;
-    // #region agent log
-    fetch('http://127.0.0.1:7798/ingest/4a22a3f1-86b2-43d8-8539-f9d434bff337',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'67856d'},body:JSON.stringify({sessionId:'67856d',runId:'post-fix',hypothesisId:'H1',location:'content.ts:noteMenuItem.click-after-hide',message:'note menu click: after hideContextMenu',data:{activeStorageIdAfterHide:activeStorageId,targetStorageId,willReturnEarly:!activeStorageId},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (!activeStorageId) return;
     const pageKey = normalizeUrl(window.location.href);
     const highlights = getCachedHighlights(pageKey);
@@ -688,6 +805,28 @@ function setupHighlightContextMenu() {
     }
 
     showContextMenuAt(e.pageX, e.pageY);
+  });
+
+  // Left-click on a noted highlight: show the note in read-only mode.
+  // Skipped when the click lands on an interactive descendant (link/button/
+  // form input) so existing link-following inside highlights still works.
+  document.addEventListener("click", (e) => {
+    if (!enabled) return;
+    if (e.button !== 0) return;
+    const target = e.target as Element | null;
+    if (!target) return;
+    if (target.closest("a, button, input, textarea, select, label")) return;
+    const noted = target.closest('.custom-highlight[data-has-note="true"]');
+    if (!noted) return;
+    const storageId = noted.getAttribute("data-group") ?? noted.id;
+    if (!storageId) return;
+    const pageKey = normalizeUrl(window.location.href);
+    const entry = getCachedHighlights(pageKey).find((h) => h.id === storageId);
+    if (!entry?.note || entry.note.trim().length === 0) return;
+    e.stopPropagation();
+    hideContextMenu();
+    hideNoteEditor();
+    showNoteViewerAt(e.pageX, e.pageY, entry.note);
   });
 
   // Hide on outside click, Escape, scroll, resize
@@ -794,10 +933,11 @@ chrome.runtime.onMessage.addListener(
         highlightsAppliedOnce = false;
         applyHighlightsOnce();
       } else {
-        // Stop creating new highlights and hide the context menu + note editor
+        // Stop creating new highlights and hide all popups
         document.removeEventListener("mouseup", handleMouseUp);
         hideContextMenu();
         hideNoteEditor();
+        hideNoteViewer();
         // Remove all highlight spans from the DOM
         const highlights = document.querySelectorAll(".custom-highlight");
         highlights.forEach((el) => {

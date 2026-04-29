@@ -332,22 +332,42 @@ function scoreOccurrenceByContext(
 // ---------------------------------------------------------------------------
 
 /**
- * Serialises all URL-keyed highlight entries from chrome.storage.sync to a
- * JSON string suitable for download.
+ * Serialises all URL-keyed highlight entries to a JSON string suitable for
+ * download. Reads from BOTH chrome.storage.sync and chrome.storage.local and
+ * merges them, with sync taking priority on key collision. This ensures
+ * pages whose highlights overflowed the sync per-item quota and fell back
+ * to local storage are still exported (otherwise they — and their notes —
+ * would silently disappear from the exported JSON).
  */
 export async function exportHighlights(): Promise<string> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(null, (allData: Record<string, unknown>) => {
-      const highlights: Record<string, HighlightData[]> = {};
-      for (const [key, value] of Object.entries(allData)) {
-        // Only include entries whose key looks like a URL
-        if (key.startsWith("http") && Array.isArray(value)) {
-          highlights[key] = value as HighlightData[];
+  const readUrlKeyedEntries = (
+    store: chrome.storage.StorageArea,
+  ): Promise<Record<string, HighlightData[]>> =>
+    new Promise((resolve) => {
+      store.get(null, (allData: Record<string, unknown>) => {
+        const urlEntries: Record<string, HighlightData[]> = {};
+        for (const [key, value] of Object.entries(allData)) {
+          if (key.startsWith("http") && Array.isArray(value)) {
+            urlEntries[key] = value as HighlightData[];
+          }
         }
-      }
-      resolve(JSON.stringify(highlights, null, 2));
+        resolve(urlEntries);
+      });
     });
-  });
+
+  const [syncEntries, localEntries] = await Promise.all([
+    readUrlKeyedEntries(chrome.storage.sync),
+    readUrlKeyedEntries(chrome.storage.local),
+  ]);
+
+  // Merge: start with local, then overlay sync so sync wins on key collision
+  // (sync is the canonical source for any page whose data fits within quota).
+  const merged: Record<string, HighlightData[]> = {
+    ...localEntries,
+    ...syncEntries,
+  };
+
+  return JSON.stringify(merged, null, 2);
 }
 
 /**
